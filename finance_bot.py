@@ -552,7 +552,9 @@ def webhook_transaction():
 async def process_webhook_callback(callback: types.CallbackQuery, state: FSMContext):
     payload = callback.data[3:]
     if payload == "no":
-        await callback.message.edit_text("❌ Транзакция пропущена.")
+        await callback.message.edit_reply_markup(reply_markup=None)
+        await callback.message.answer("❌ Транзакция пропущена.")
+        await callback.answer()
         return
     
     tx = pending_transactions.pop(payload, None)
@@ -566,9 +568,13 @@ async def process_webhook_callback(callback: types.CallbackQuery, state: FSMCont
         comment=tx.get('m', '')
     )
     
-    await callback.message.edit_text("Выберите категорию:")
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.answer(
+        f"✅ Отлично! Записываем транзакцию на {tx.get('a')} ₽ из {tx.get('m', 'неизвестно')}\n\nВыберите категорию:",
+        reply_markup=categories_kb()
+    )
     await TransactionForm.category.set()
-    await callback.message.answer("Выберите категорию:", reply_markup=categories_kb())
+    await callback.answer()
 
 # === ЗАПУСК БОТА ===
 def run_bot():
