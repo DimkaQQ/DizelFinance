@@ -11,6 +11,7 @@ from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from flask import Flask, request, jsonify
 import threading
+import json
 
 # === Настройка ===
 load_dotenv()
@@ -464,11 +465,26 @@ async def statistics(message: types.Message):
         logging.error(f"Ошибка расчёта статистики: {e}")
         await message.answer("❌ Ошибка при расчёте статистики.", reply_markup=main_menu_kb())
 
+# === Settings ===
+@dp.message_handler(lambda m: m.text == "⚙️ Настройки", state="*")
+async def settings(message: types.Message):
+    await message.answer(
+        f"⚙️ <b>Настройки</b>\n\n👤 Ваш ID: <code>{message.from_user.id}</code>\n"
+        f"🗄 Google Sheets: {'✅ Подключён' if sh else '❌ Не подключён'}",
+        parse_mode="HTML", reply_markup=main_menu_kb()
+    )
+
+# === message error ===
+@dp.message_handler(state="*")
+async def unknown_message(message: types.Message, state: FSMContext):
+    if await state.get_state() is None:
+        await message.answer("Не понимаю. Используйте меню 👇", reply_markup=main_menu_kb())
+
 # === WEBHOOK ДЛЯ SMS/EMAIL ===
 app = Flask(__name__)
 
 @app.route('/webhook/transaction', methods=['POST'])
-async def webhook_transaction():
+def webhook_transaction():
     """
     Принимает данные от iPhone Shortcuts или Gmail парсера
     
@@ -500,11 +516,16 @@ async def webhook_transaction():
         
         kb = types.InlineKeyboardMarkup(row_width=2)
         kb.add(
-            types.InlineKeyboardButton("✅ Да", callback_data=f"webhook_yes_{data.get('amount')}_{data.get('merchant')}_{data.get('card')}_{data.get('date')}"),
-            types.InlineKeyboardButton("❌ Нет", callback_data="webhook_no")
+            cb = json.dumps({"a": data.get('amount'), "m": data.get('merchant',''), "c": data.get('card',''), "d": data.get('date','')}, ensure_ascii=False)
+            types.InlineKeyboardButton("✅ Да", callback_data=f"wb|{cb}"),
+            types.InlineKeyboardButton("❌ Нет", callback_data="wb|no")
         )
         
-        await bot.send_message(user_id, message_text, parse_mode="HTML", reply_markup=kb)
+        import asyncio
+        asyncio.run_coroutine_threadsafe(
+            bot.send_message(user_id, message_text, parse_mode="HTML", reply_markup=kb),
+            loop
+        )
         
         return jsonify({"status": "ok"}), 200
         
@@ -513,25 +534,19 @@ async def webhook_transaction():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 # === ОБРАБОТКА WEBHOOK КНОПОК ===
-@dp.callback_query_handler(lambda c: c.data.startswith("webhook_"))
+@dp.callback_query_handler(lambda c: c.data.startswith("wb|"))
 async def process_webhook_callback(callback: types.CallbackQuery, state: FSMContext):
-    if callback.data == "webhook_no":
+    payload = callback.data[3:]
+    if payload == "no":
         await callback.message.edit_text("❌ Транзакция пропущена.")
         return
     
-    # Парсим данные
-    parts = callback.data.split("_")
-    amount = float(parts[2])
-    merchant = parts[3]
-    card = parts[4]
-    date = parts[5]
-    
-    # Сохраняем в state для дальнейшей обработки
+    tx = json.loads(payload)
     await state.update_data(
-        amount=amount,
-        card=card,
-        date=date,
-        comment=merchant
+        amount=float(tx.get('a', 0)),
+        card=tx.get('c', ''),
+        date=tx.get('d', datetime.now().strftime('%d.%m.%Y')),
+        comment=tx.get('m', '')
     )
     
     await callback.message.edit_text("Выберите категорию:")
@@ -546,8 +561,9 @@ def run_flask():
     app.run(host='0.0.0.0', port=5000)
 
 if __name__ == '__main__':
-    # Запускаем Flask в отдельном потоке для webhook
-    flask_thread = threading.Thread(target=run_flask)
+    import asyncio
+    loop = asyncio.get_event_loop()
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.daemon = True
     flask_thread.start()
     
