@@ -522,11 +522,11 @@ def webhook_transaction():
         )
         
         import asyncio
-        future = asyncio.run_coroutine_threadsafe(
-            bot.send_message(user_id, message_text, parse_mode="HTML", reply_markup=kb),
-            dp.loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(
+            bot.send_message(user_id, message_text, parse_mode="HTML", reply_markup=kb)
         )
-        future.result(timeout=10)
         
         return jsonify({"status": "ok"}), 200
         
