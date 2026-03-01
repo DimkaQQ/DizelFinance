@@ -13,6 +13,8 @@ from flask import Flask, request, jsonify
 import threading
 import json
 import requests
+import uuid
+pending_transactions = {}
 
 # === Настройка ===
 load_dotenv()
@@ -515,10 +517,17 @@ def webhook_transaction():
             f"Хотите записать эту транзакцию?"
         )
         
-        cb = json.dumps({"a": data.get('amount'), "m": data.get('merchant',''), "c": data.get('card',''), "d": data.get('date','')}, ensure_ascii=False)
+        import uuid
+        tx_id = str(uuid.uuid4())[:8]
+        pending_transactions[tx_id] = {
+            "a": data.get('amount'),
+            "m": data.get('merchant', ''),
+            "c": data.get('card', ''),
+            "d": data.get('date', '')
+        }
         kb = types.InlineKeyboardMarkup(row_width=2)
         kb.add(
-            types.InlineKeyboardButton("✅ Да", callback_data=f"wb|{cb}"),
+            types.InlineKeyboardButton("✅ Да", callback_data=f"wb|{tx_id}"),
             types.InlineKeyboardButton("❌ Нет", callback_data="wb|no")
         )
         
@@ -546,7 +555,10 @@ async def process_webhook_callback(callback: types.CallbackQuery, state: FSMCont
         await callback.message.edit_text("❌ Транзакция пропущена.")
         return
     
-    tx = json.loads(payload)
+    tx = pending_transactions.pop(payload, None)
+    if not tx:
+        await callback.message.edit_text("❌ Транзакция устарела.")
+        return
     await state.update_data(
         amount=float(tx.get('a', 0)),
         card=tx.get('c', ''),
