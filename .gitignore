@@ -1,0 +1,45 @@
+# ════════════════════════════════════════════════════════════════
+# .gitignore для Finance Bot
+# ════════════════════════════════════════════════════════════════
+
+# ═══ Конфиденциальные файлы ═══
+.env
+finance-key.json
+credentials.json
+token.json
+
+# ═══ Python ═══
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+
+# ═══ IDE ═══
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ═══ Логи ═══
+*.log
+logs/
+
+# ═══ Временные файлы ═══
+*.tmp
+.DS_Store
+Thumbs.db
+
+# ═══ Backup ═══
+*.backup
+*.bak
+backup_*.tar.gz
+
+# ═══ Тестовые файлы ═══
+test_*.py
+*_test.py
