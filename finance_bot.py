@@ -12,6 +12,7 @@ from aiogram.dispatcher.filters.state import State, StatesGroup
 from flask import Flask, request, jsonify
 import threading
 import json
+import requests
 
 # === Настройка ===
 load_dotenv()
@@ -521,12 +522,14 @@ def webhook_transaction():
             types.InlineKeyboardButton("❌ Нет", callback_data="wb|no")
         )
         
-        import asyncio
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(
-            bot.send_message(user_id, message_text, parse_mode="HTML", reply_markup=kb)
-        )
+        import requests as req
+        tg_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        req.post(tg_url, json={
+            "chat_id": user_id,
+            "text": message_text,
+            "parse_mode": "HTML",
+            "reply_markup": kb.to_python()
+        })
         
         return jsonify({"status": "ok"}), 200
         
