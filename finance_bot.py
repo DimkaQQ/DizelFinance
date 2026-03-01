@@ -524,12 +524,13 @@ def webhook_transaction():
         
         import requests as req
         tg_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        req.post(tg_url, json={
+        tg_response = req.post(tg_url, json={
             "chat_id": user_id,
             "text": message_text,
             "parse_mode": "HTML",
             "reply_markup": kb.to_python()
         })
+        logging.info(f"Telegram response: {tg_response.status_code} {tg_response.text}")
         
         return jsonify({"status": "ok"}), 200
         
