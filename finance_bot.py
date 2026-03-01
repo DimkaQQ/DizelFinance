@@ -514,9 +514,9 @@ def webhook_transaction():
             f"Хотите записать эту транзакцию?"
         )
         
+        cb = json.dumps({"a": data.get('amount'), "m": data.get('merchant',''), "c": data.get('card',''), "d": data.get('date','')}, ensure_ascii=False)
         kb = types.InlineKeyboardMarkup(row_width=2)
         kb.add(
-            cb = json.dumps({"a": data.get('amount'), "m": data.get('merchant',''), "c": data.get('card',''), "d": data.get('date','')}, ensure_ascii=False)
             types.InlineKeyboardButton("✅ Да", callback_data=f"wb|{cb}"),
             types.InlineKeyboardButton("❌ Нет", callback_data="wb|no")
         )
