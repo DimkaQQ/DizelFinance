@@ -154,6 +154,21 @@ def confirmation_kb():
     kb.add("❌ Отменить")
     return kb
 
+def build_preview(data: dict) -> str:
+    preview = (
+        f"📝 <b>Предварительный просмотр:</b>\n\n"
+        f"📅 Дата: <code>{data['date']}</code>\n"
+        f"📂 Категория: <code>{data['category']}</code>\n"
+    )
+    if data.get('subcategory'):
+        preview += f"📁 Подкатегория: <code>{data['subcategory']}</code>\n"
+    preview += f"💰 Сумма: <code>{data['amount']:,.2f}</code> ₽\n"
+    if data.get('card'):
+        preview += f"💳 Карта: <code>{data['card']}</code>\n"
+    if data.get('comment'):
+        preview += f"💬 Комментарий: <code>{data['comment']}</code>\n"
+    return preview
+
 # === УВЕДОМЛЕНИЕ АДМИНУ ===
 async def notify_admin(message_text: str, user: types.User = None):
     if not ADMIN_ID:
@@ -220,8 +235,13 @@ async def process_category(message: types.Message, state: FSMContext):
         await message.answer(f"Выберите подкатегорию для '{message.text}':", reply_markup=subcategories_kb(message.text))
     else:
         await state.update_data(subcategory="")
-        await TransactionForm.amount.set()
-        await message.answer("Введите сумму (₽):", reply_markup=back_kb())
+        data = await state.get_data()
+        if data.get('from_webhook'):
+            await TransactionForm.final_confirmation.set()
+            await message.answer(build_preview(data), parse_mode="HTML", reply_markup=confirmation_kb())
+        else:
+            await TransactionForm.amount.set()
+            await message.answer("Введите сумму (₽):", reply_markup=back_kb())
 
 # === ВЫБОР ПОДКАТЕГОРИИ ===
 @dp.message_handler(state=TransactionForm.subcategory)
@@ -242,8 +262,13 @@ async def process_subcategory(message: types.Message, state: FSMContext):
         await message.answer("Выберите подкатегорию из списка:", reply_markup=subcategories_kb(category))
         return
 
-    await TransactionForm.amount.set()
-    await message.answer("Введите сумму (₽):", reply_markup=back_kb())
+    data = await state.get_data()
+    if data.get('from_webhook'):
+        await TransactionForm.final_confirmation.set()
+        await message.answer(build_preview(data), parse_mode="HTML", reply_markup=confirmation_kb())
+    else:
+        await TransactionForm.amount.set()
+        await message.answer("Введите сумму (₽):", reply_markup=back_kb())
 
 # === ВВОД СУММЫ ===
 @dp.message_handler(state=TransactionForm.amount)
@@ -334,25 +359,10 @@ async def process_comment(message: types.Message, state: FSMContext):
     comment = "" if message.text == "Пропустить" else message.text
     await state.update_data(comment=comment)
     
-    # Показываем превью
+    
     data = await state.get_data()
-    preview = (
-        f"📝 <b>Предварительный просмотр:</b>\n\n"
-        f"📅 Дата: <code>{data['date']}</code>\n"
-        f"📂 Категория: <code>{data['category']}</code>\n"
-    )
-    if data.get('subcategory'):
-        preview += f"📁 Подкатегория: <code>{data['subcategory']}</code>\n"
-    preview += (
-        f"💰 Сумма: <code>{data['amount']:,.2f}</code> ₽\n"
-    )
-    if data.get('card'):
-        preview += f"💳 Карта: <code>{data['card']}</code>\n"
-    if comment:
-        preview += f"💬 Комментарий: <code>{comment}</code>\n"
-
     await TransactionForm.final_confirmation.set()
-    await message.answer(preview, parse_mode="HTML", reply_markup=confirmation_kb())
+    await message.answer(build_preview(data), parse_mode="HTML", reply_markup=confirmation_kb())
 
 # === ФИНАЛЬНОЕ ПОДТВЕРЖДЕНИЕ ===
 @dp.message_handler(state=TransactionForm.final_confirmation)
@@ -565,7 +575,8 @@ async def process_webhook_callback(callback: types.CallbackQuery, state: FSMCont
         amount=float(tx.get('a', 0)),
         card=tx.get('c', ''),
         date=tx.get('d', datetime.now().strftime('%d.%m.%Y')),
-        comment=tx.get('m', '')
+        comment=tx.get('m', ''),
+        from_webhook=True
     )
     
     await callback.message.edit_reply_markup(reply_markup=None)
