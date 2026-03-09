@@ -603,6 +603,21 @@ async def new_transaction(message: types.Message, state: FSMContext):
 @dp.message_handler(state=TransactionForm.category)
 async def process_category(message: types.Message, state: FSMContext):
     if message.text == "⏪ Назад":
+        # Restore draft if came from webhook
+        data = await state.get_data()
+        if data.get('from_webhook') and data.get('amount'):
+            user_id = message.from_user.id
+            if user_id not in saved_drafts:
+                saved_drafts[user_id] = []
+            import uuid as _uuid
+            saved_drafts[user_id].append({
+                "id": str(_uuid.uuid4())[:8],
+                "a": data['amount'], "m": data.get('comment',''),
+                "c": data.get('card',''), "d": data.get('date',''),
+                "cur": data.get('currency','RUB'),
+                "rate": data.get('rate', 1.0),
+                "a_rub": data.get('amount_rub', data['amount'])
+            })
         await TransactionForm.waiting_for_action.set()
         await message.answer("Выберите действие:", reply_markup=main_menu_kb())
         return
@@ -973,10 +988,14 @@ def webhook_transaction():
             "cur": currency, "rate": rate, "a_rub": amount_rub
         })
 
-        kb = types.InlineKeyboardMarkup(row_width=2)
+        # Quick category buttons
+        kb = types.InlineKeyboardMarkup(row_width=3)
+        quick_cats = ["Жизнь", "Транспорт", "Дом", "Здоровье", "Развлечения", "Прочее"]
+        for cat in quick_cats:
+            kb.add(types.InlineKeyboardButton(cat, callback_data=f"wbq|{tx_id}|{cat}"))
         kb.add(
-            types.InlineKeyboardButton("✅ Да", callback_data=f"wb|{tx_id}"),
-            types.InlineKeyboardButton("❌ Нет", callback_data="wb|no")
+            types.InlineKeyboardButton("📋 Все категории", callback_data=f"wb|{tx_id}"),
+            types.InlineKeyboardButton("❌ Пропустить", callback_data="wb|no")
         )
 
         import requests as req
@@ -991,6 +1010,63 @@ def webhook_transaction():
     except Exception as e:
         logging.error(f"Ошибка webhook: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# === WEBHOOK БЫСТРЫЕ КАТЕГОРИИ ===
+@dp.callback_query_handler(lambda c: c.data.startswith("wbq|"), state="*")
+async def process_webhook_quick(callback: types.CallbackQuery, state: FSMContext):
+    parts = callback.data.split("|")
+    tx_id = parts[1]
+    category = parts[2]
+    
+    tx = pending_transactions.pop(tx_id, None)
+    if not tx:
+        await callback.message.edit_text("❌ Транзакция устарела.")
+        await callback.answer()
+        return
+    
+    # Remove from drafts
+    user_id = callback.from_user.id
+    if user_id in saved_drafts:
+        saved_drafts[user_id] = [d for d in saved_drafts[user_id]
+                                  if not (d['a'] == tx['a'] and d['m'] == tx['m'] and d['d'] == tx['d'])]
+    
+    await state.update_data(
+        amount=tx['a'], currency=tx['cur'], rate=tx['rate'],
+        amount_rub=tx['a_rub'], card=tx['c'], date=tx['d'],
+        comment=tx['m'], from_webhook=True, category=category
+    )
+    
+    subs = CATEGORIES.get(category, [])
+    await callback.message.edit_reply_markup(reply_markup=None)
+    
+    if subs:
+        await TransactionForm.subcategory.set()
+        kb = types.InlineKeyboardMarkup(row_width=2)
+        for sub in subs:
+            kb.add(types.InlineKeyboardButton(sub, callback_data=f"wbs|{sub}"))
+        kb.add(types.InlineKeyboardButton("Без подкатегории", callback_data="wbs|none"))
+        symbol = CURRENCY_SYMBOLS.get(tx['cur'], tx['cur'])
+        await callback.message.answer(
+            f"📂 {category} — {tx['a']:,.0f} {symbol} — {tx['m']}\n\nПодкатегория:",
+            reply_markup=kb
+        )
+    else:
+        await state.update_data(subcategory="")
+        data = await state.get_data()
+        await TransactionForm.final_confirmation.set()
+        await callback.message.answer(build_preview(data), parse_mode="HTML", reply_markup=confirmation_kb())
+    await callback.answer()
+
+@dp.callback_query_handler(lambda c: c.data.startswith("wbs|"), state=TransactionForm.subcategory)
+async def process_webhook_sub(callback: types.CallbackQuery, state: FSMContext):
+    sub = callback.data.split("|")[1]
+    await state.update_data(subcategory="" if sub == "none" else sub)
+    data = await state.get_data()
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await TransactionForm.final_confirmation.set()
+    await callback.message.answer(build_preview(data), parse_mode="HTML", reply_markup=confirmation_kb())
+    await callback.answer()
 
 # === WEBHOOK КНОПКИ ===
 @dp.callback_query_handler(lambda c: c.data.startswith("wb|"), state="*")
