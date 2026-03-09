@@ -27,7 +27,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 SHEET_URL = os.getenv("SHEET_URL")
 ADMIN_ID = os.getenv("ADMIN_TELEGRAM_ID")
 ALLOWED_IDS = set(int(x.strip()) for x in os.getenv("ALLOWED_USER_IDS", "").split(",") if x.strip())
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 logging.basicConfig(level=logging.INFO)
 
@@ -54,37 +54,17 @@ def get_cbr_rate(currency: str) -> float:
         logging.error(f"Ошибка получения курса ЦБ: {e}")
     return 1.0
 
-# === CLAUDE API ===
-def ask_claude(prompt: str, pdf_base64: str = None) -> str:
-    headers = {
-        "x-api-key": ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json"
-    }
-    content = []
+# === GEMINI API ===
+def ask_gemini(prompt: str, pdf_base64: str = None) -> str:
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+    parts = []
     if pdf_base64:
-        content.append({
-            "type": "document",
-            "source": {
-                "type": "base64",
-                "media_type": "application/pdf",
-                "data": pdf_base64
-            }
-        })
-    content.append({"type": "text", "text": prompt})
-    body = {
-        "model": "claude-sonnet-4-20250514",
-        "max_tokens": 4000,
-        "messages": [{"role": "user", "content": content}]
-    }
-    response = requests.post(
-        "https://api.anthropic.com/v1/messages",
-        headers=headers,
-        json=body,
-        timeout=60
-    )
+        parts.append({"inline_data": {"mime_type": "application/pdf", "data": pdf_base64}})
+    parts.append({"text": prompt})
+    body = {"contents": [{"parts": parts}], "generationConfig": {"temperature": 0.1}}
+    response = requests.post(url, json=body, timeout=60)
     data = response.json()
-    return data["content"][0]["text"]
+    return data["candidates"][0]["content"]["parts"][0]["text"]
 
 # === УГАДАТЬ КАТЕГОРИЮ ===
 def guess_category(merchant: str, amount: float) -> tuple:
@@ -102,7 +82,7 @@ def guess_category(merchant: str, amount: float) -> tuple:
 
 Выбирай ТОЛЬКО из предложенных категорий и подкатегорий."""
     try:
-        result = ask_claude(prompt)
+        result = ask_gemini(prompt)
         result = result.strip().replace('```json', '').replace('```', '').strip()
         data = json.loads(result)
         category = data.get("category", "Прочее")
@@ -134,7 +114,7 @@ def parse_pdf_transactions(pdf_base64: str) -> list:
 
 Если транзакций нет — верни пустой массив []."""
     try:
-        result = ask_claude(prompt, pdf_base64)
+        result = ask_gemini(prompt, pdf_base64)
         result = result.strip().replace('```json', '').replace('```', '').strip()
         transactions = json.loads(result)
         return transactions if isinstance(transactions, list) else []
@@ -172,6 +152,14 @@ CATEGORIES = {
     "Движение активов": ["Портфель Екатерины", "Портфель Влада", "Портфель Ланы (подушка)", "Пенсионный план", "Инвестиции в бизнес"]
 }
 
+
+INCOME_CATEGORIES = {
+    "Зарплата": [],
+    "Консалтинг": ["Ретейнеры", "Проекты", "Прочее"],
+    "Дивиденды": [],
+    "Прочее": [],
+    "Подарки": [],
+}
 CURRENCIES = ["RUB", "USD", "EUR", "KZT"]
 CARDS = ["Тинькофф", "Альфа", "Сбер", "Freedom"]
 CURRENCY_SYMBOLS = {"RUB": "₽", "USD": "$", "EUR": "€", "KZT": "₸"}
@@ -184,6 +172,7 @@ dp = Dispatcher(bot, storage=storage)
 # === Состояния FSM ===
 class TransactionForm(StatesGroup):
     waiting_for_action = State()
+    tx_type = State()
     category = State()
     subcategory = State()
     amount = State()
@@ -206,6 +195,13 @@ def main_menu_kb():
     kb.add("📥 Отложенные")
     return kb
 
+
+def tx_type_kb():
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    kb.add("💸 Расход", "💰 Доход")
+    kb.add("⏪ Назад")
+    return kb
+
 def categories_kb():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     for cat in CATEGORIES.keys():
@@ -216,6 +212,17 @@ def categories_kb():
 def subcategories_kb(category):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     subs = CATEGORIES.get(category, [])
+    for sub in subs:
+        kb.add(sub)
+    if not subs:
+        kb.add("Без подкатегории")
+    kb.add("⏪ Назад")
+    return kb
+
+
+def subcategories_kb_income(category):
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    subs = INCOME_CATEGORIES.get(category, [])
     for sub in subs:
         kb.add(sub)
     if not subs:
@@ -285,8 +292,10 @@ def build_preview(data: dict) -> str:
     amount_rub = data.get('amount_rub', amount)
     symbol = CURRENCY_SYMBOLS.get(currency, currency)
 
+    tx_type_label = "💰 Доход" if data.get('tx_type') == 'Доход' else "💸 Расход"
     preview = (
         f"📝 <b>Предварительный просмотр:</b>\n\n"
+        f"{tx_type_label}\n"
         f"📅 Дата: <code>{data.get('date', '')}</code>\n"
         f"📂 Категория: <code>{data.get('category', '')}</code>\n"
     )
@@ -596,8 +605,31 @@ async def pdf_item_handler(callback: types.CallbackQuery, state: FSMContext):
 @dp.message_handler(lambda m: m.text == "➕ Новая транзакция", state="*")
 async def new_transaction(message: types.Message, state: FSMContext):
     await state.finish()
-    await TransactionForm.category.set()
-    await message.answer("Выберите категорию:", reply_markup=categories_kb())
+    await TransactionForm.tx_type.set()
+    await message.answer("Тип операции:", reply_markup=tx_type_kb())
+
+# === ТИП ОПЕРАЦИИ ===
+@dp.message_handler(state=TransactionForm.tx_type)
+async def process_tx_type(message: types.Message, state: FSMContext):
+    if message.text == "⏪ Назад":
+        await TransactionForm.waiting_for_action.set()
+        await message.answer("Выберите действие:", reply_markup=main_menu_kb())
+        return
+    if message.text not in ["💸 Расход", "💰 Доход"]:
+        await message.answer("Выберите тип:", reply_markup=tx_type_kb())
+        return
+    tx_type = "Расход" if message.text == "💸 Расход" else "Доход"
+    await state.update_data(tx_type=tx_type)
+    if tx_type == "Доход":
+        await TransactionForm.category.set()
+        kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        for cat in INCOME_CATEGORIES.keys():
+            kb.add(cat)
+        kb.add("⏪ Назад")
+        await message.answer("Категория дохода:", reply_markup=kb)
+    else:
+        await TransactionForm.category.set()
+        await message.answer("Категория расхода:", reply_markup=categories_kb())
 
 # === КАТЕГОРИЯ ===
 @dp.message_handler(state=TransactionForm.category)
@@ -624,10 +656,17 @@ async def process_category(message: types.Message, state: FSMContext):
     if message.text not in CATEGORIES:
         await message.answer("Выберите категорию из списка:", reply_markup=categories_kb())
         return
+    data_check = await state.get_data()
+    tx_type = data_check.get('tx_type', 'Расход')
+    cats = INCOME_CATEGORIES if tx_type == 'Доход' else CATEGORIES
+    if message.text not in cats:
+        await message.answer("Выберите из списка:", reply_markup=categories_kb() if tx_type == 'Расход' else tx_type_kb())
+        return
     await state.update_data(category=message.text)
-    if CATEGORIES[message.text]:
+    subs = cats[message.text]
+    if subs:
         await TransactionForm.subcategory.set()
-        await message.answer(f"Выберите подкатегорию для '{message.text}':", reply_markup=subcategories_kb(message.text))
+        await message.answer(f"Выберите подкатегорию для '{message.text}':", reply_markup=subcategories_kb(message.text) if tx_type == 'Расход' else subcategories_kb_income(message.text))
     else:
         await state.update_data(subcategory="")
         data = await state.get_data()
@@ -876,7 +915,7 @@ async def settings(message: types.Message):
         f"⚙️ <b>Настройки</b>\n\n"
         f"👤 Ваш ID: <code>{message.from_user.id}</code>\n"
         f"🗄 Google Sheets: {'✅ Подключён' if sh else '❌ Не подключён'}\n"
-        f"🤖 Claude API: {'✅ Подключён' if ANTHROPIC_API_KEY else '❌ Не настроен'}",
+        f"🤖 Gemini API: {'✅ Подключён' if GEMINI_API_KEY else '❌ Не настроен'}",
         parse_mode="HTML", reply_markup=main_menu_kb()
     )
 
@@ -975,9 +1014,11 @@ def webhook_transaction():
         message_text += f"🏪 Место: {merchant}\n💳 Карта: {card}\n📅 Дата: {date}\n\nЗаписать?"
 
         tx_id = str(uuid.uuid4())[:8]
+        tx_type_w = data.get('tx_type', 'Расход')
         pending_transactions[tx_id] = {
             "a": amount, "m": merchant, "c": card, "d": date,
-            "cur": currency, "rate": rate, "a_rub": amount_rub
+            "cur": currency, "rate": rate, "a_rub": amount_rub,
+            "tx_type": tx_type_w
         }
         # Автосохранение в черновики
         draft_id = str(uuid.uuid4())[:8]
@@ -1094,6 +1135,7 @@ async def process_webhook_callback(callback: types.CallbackQuery, state: FSMCont
         card=tx.get('c', ''),
         date=tx.get('d', datetime.now().strftime('%d.%m.%Y, %H:%M')),
         comment=tx.get('m', ''),
+        tx_type=tx.get('tx_type', 'Расход'),
         from_webhook=True
     )
     symbol = CURRENCY_SYMBOLS.get(tx.get('cur', 'RUB'), '₽')
