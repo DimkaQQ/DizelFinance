@@ -338,12 +338,13 @@ async def save_transaction_to_sheets(data: dict):
         data.get('subcategory', ''),
         amount,
         currency,
-        str(rate).replace('.', ',') if currency != 'RUB' else '',
+        str(round(rate, 6)) if currency != 'RUB' else '',
+        str(round(float(amount_rub), 2)),
         amount_rub,
         data.get('card', ''),
         data.get('comment', '')
     ]
-    ws.append_row(new_row)
+    ws.append_row(new_row, value_input_option='RAW')
 
 # === УВЕДОМЛЕНИЕ АДМИНУ ===
 async def notify_admin(message_text: str, user: types.User = None):
