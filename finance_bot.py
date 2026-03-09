@@ -338,7 +338,7 @@ async def save_transaction_to_sheets(data: dict):
         data.get('subcategory', ''),
         amount,
         currency,
-        rate if currency != 'RUB' else '',
+        str(rate).replace('.', ',') if currency != 'RUB' else '',
         amount_rub,
         data.get('card', ''),
         data.get('comment', '')
