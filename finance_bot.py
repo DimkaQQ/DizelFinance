@@ -796,7 +796,7 @@ async def my_transactions(message: types.Message):
         for rec in last_10:
             currency = rec.get('Валюта', 'RUB')
             amount = rec.get('Сумма', 0)
-            amount_rub = rec.get('Сумма в Руб', rec.get('Сумма в RUB', amount))
+            amount_rub = str(rec.get('Сумма в Руб', rec.get('Сумма в RUB', amount))).replace(',', '.')
             symbol = CURRENCY_SYMBOLS.get(currency, currency)
             text += f"📅 {rec.get('Дата', '')}\n"
             text += f"📂 {rec.get('Категория', '')} → {rec.get('Подкатегория', '')}\n"
@@ -826,7 +826,7 @@ async def statistics(message: types.Message):
                 dt = datetime.strptime(date_part, "%d.%m.%Y")
                 if dt.strftime("%m.%Y") == current_month:
                     cat = rec.get('Категория', 'Прочее')
-                    amount_rub = float(rec.get('Сумма в RUB', rec.get('Сумма', 0)))
+                    amount_rub = float(str(rec.get('Сумма в Руб', rec.get('Сумма в RUB', rec.get('Сумма', 0)))).replace(',', '.'))
                     category_totals[cat] = category_totals.get(cat, 0) + amount_rub
             except ValueError:
                 continue
