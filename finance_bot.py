@@ -794,15 +794,22 @@ async def my_transactions(message: types.Message):
         last_10 = records[-10:]
         text = "📋 <b>Последние 10 транзакций:</b>\n\n"
         for rec in last_10:
-            currency = rec.get('Валюта', 'RUB')
-            amount = rec.get('Сумма', 0)
-            amount_rub = str(rec.get('Сумма в Руб', rec.get('Сумма в RUB', amount))).replace(',', '.')
+            currency = str(rec.get('Валюта', 'RUB')).strip() or 'RUB'
             symbol = CURRENCY_SYMBOLS.get(currency, currency)
+            try:
+                amount = float(str(rec.get('Сумма', 0)).replace(',', '.').replace(' ', '') or 0)
+            except:
+                amount = 0
+            try:
+                raw_rub = rec.get('Сумма в Руб', rec.get('Сумма в RUB', ''))
+                amount_rub = float(str(raw_rub).replace(',', '.').replace(' ', '') or amount)
+            except:
+                amount_rub = amount
             text += f"📅 {rec.get('Дата', '')}\n"
             text += f"📂 {rec.get('Категория', '')} → {rec.get('Подкатегория', '')}\n"
-            text += f"💰 {float(amount):,.0f} {symbol}"
+            text += f"💰 {amount:,.0f} {symbol}"
             if currency != 'RUB':
-                text += f" ({float(amount_rub):,.0f} ₽)"
+                text += f" ({amount_rub:,.0f} ₽)"
             text += f"\n🏪 {rec.get('Место', '')}\n{'─' * 30}\n"
         await message.answer(text, parse_mode="HTML", reply_markup=main_menu_kb())
     except Exception as e:
@@ -826,9 +833,10 @@ async def statistics(message: types.Message):
                 dt = datetime.strptime(date_part, "%d.%m.%Y")
                 if dt.strftime("%m.%Y") == current_month:
                     cat = rec.get('Категория', 'Прочее')
-                    amount_rub = float(str(rec.get('Сумма в Руб', rec.get('Сумма в RUB', rec.get('Сумма', 0)))).replace(',', '.'))
+                    raw = rec.get('Сумма в Руб', rec.get('Сумма в RUB', rec.get('Сумма', 0)))
+                    amount_rub = float(str(raw).replace(',', '.').replace(' ', '') or 0)
                     category_totals[cat] = category_totals.get(cat, 0) + amount_rub
-            except ValueError:
+            except (ValueError, TypeError):
                 continue
         if not category_totals:
             await message.answer("📂 Нет транзакций за текущий месяц.", reply_markup=main_menu_kb())
@@ -871,8 +879,6 @@ def webhook_transaction():
         user_id = data.get('user_id')
         if not user_id or (ALLOWED_IDS and int(user_id) not in ALLOWED_IDS):
             return jsonify({"status": "error", "message": "Unauthorized"}), 403
-
-        logging.info(f"Webhook data: {json.dumps(data, ensure_ascii=False)}")
 
         amount = float(data.get('amount', 0))
         currency = data.get('currency', 'RUB')
