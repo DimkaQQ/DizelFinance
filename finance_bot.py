@@ -19,6 +19,7 @@ import xml.etree.ElementTree as ET
 
 pending_transactions = {}
 pdf_sessions = {}
+saved_drafts = {}  # user_id -> list of draft transactions
 
 # === Настройка ===
 load_dotenv()
@@ -202,6 +203,7 @@ def main_menu_kb():
     kb.add("📋 Мои транзакции")
     kb.add("📊 Статистика")
     kb.add("⚙️ Настройки")
+    kb.add("📥 Отложенные")
     return kb
 
 def categories_kb():
@@ -291,12 +293,12 @@ def build_preview(data: dict) -> str:
     if data.get('subcategory'):
         preview += f"📁 Подкатегория: <code>{data['subcategory']}</code>\n"
     if currency == "RUB":
-        preview += f"💰 Сумма: <code>{float(amount):,.2f}</code> ₽\n"
+        preview += f"💰 Сумма: <code>{float(amount):,.0f}</code> ₽\n"
     else:
         preview += (
-            f"💰 Сумма: <code>{float(amount):,.2f}</code> {symbol}\n"
-            f"💱 Курс ЦБ: <code>{float(rate):,.2f}</code> ₽/{symbol}\n"
-            f"🔄 В рублях: <code>{float(amount_rub):,.2f}</code> ₽\n"
+            f"💰 Сумма: <code>{float(amount):,.0f}</code> {symbol}\n"
+            f"💱 Курс ЦБ: <code>{float(rate):,.4f}</code> ₽/{symbol}\n"
+            f"🔄 В рублях: <code>{float(amount_rub):,.0f}</code> ₽\n"
         )
     if data.get('card'):
         preview += f"💳 Карта: <code>{data['card']}</code>\n"
@@ -338,13 +340,12 @@ async def save_transaction_to_sheets(data: dict):
         data.get('subcategory', ''),
         amount,
         currency,
-        str(round(rate, 6)) if currency != 'RUB' else '',
-        str(round(float(amount_rub), 2)),
+        rate if currency != 'RUB' else '',
         amount_rub,
         data.get('card', ''),
         data.get('comment', '')
     ]
-    ws.append_row(new_row, value_input_option='RAW')
+    ws.append_row(new_row)
 
 # === УВЕДОМЛЕНИЕ АДМИНУ ===
 async def notify_admin(message_text: str, user: types.User = None):
@@ -793,8 +794,6 @@ async def my_transactions(message: types.Message):
             await message.answer("📂 Нет транзакций.", reply_markup=main_menu_kb())
             return
         last_10 = records[-10:]
-        logging.info(f"KEYS: {list(records[-1].keys())}")
-        logging.info(f"REC EUR: {records[-3]}")
         text = "📋 <b>Последние 10 транзакций:</b>\n\n"
         for rec in last_10:
             currency = str(rec.get('Валюта', 'RUB')).strip() or 'RUB'
@@ -866,6 +865,68 @@ async def settings(message: types.Message):
         parse_mode="HTML", reply_markup=main_menu_kb()
     )
 
+
+# === ОТЛОЖЕННЫЕ ТРАНЗАКЦИИ ===
+@dp.message_handler(lambda m: m.text == "📥 Отложенные", state="*")
+async def show_drafts(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    drafts = saved_drafts.get(user_id, [])
+    if not drafts:
+        await message.answer("📭 Нет отложенных транзакций.", reply_markup=main_menu_kb())
+        return
+    text = f"📥 <b>Отложенные транзакции ({len(drafts)}):</b>\n\n"
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    for i, d in enumerate(drafts):
+        symbol = CURRENCY_SYMBOLS.get(d['cur'], d['cur'])
+        text += f"{i+1}. 💰 {d['a']:,.0f} {symbol} — {d['m']} ({d['d']})\n"
+        kb.add(types.InlineKeyboardButton(
+            f"✏️ #{i+1} {d['m']} {d['a']:,.0f} {symbol}",
+            callback_data=f"draft|{d['id']}"
+        ))
+    kb.add(types.InlineKeyboardButton("🗑 Очистить все", callback_data="draft|clear"))
+    await message.answer(text, parse_mode="HTML", reply_markup=kb)
+
+@dp.callback_query_handler(lambda c: c.data.startswith("draft|"), state="*")
+async def process_draft(callback: types.CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    action = callback.data.split("|")[1]
+    
+    if action == "clear":
+        saved_drafts.pop(user_id, None)
+        await callback.message.edit_text("🗑 Все черновики удалены.")
+        await callback.answer()
+        return
+    
+    draft_id = action
+    drafts = saved_drafts.get(user_id, [])
+    draft = next((d for d in drafts if d['id'] == draft_id), None)
+    if not draft:
+        await callback.message.edit_text("❌ Черновик не найден.")
+        await callback.answer()
+        return
+    
+    # Remove from drafts
+    saved_drafts[user_id] = [d for d in drafts if d['id'] != draft_id]
+    
+    await state.update_data(
+        amount=draft['a'],
+        currency=draft['cur'],
+        rate=draft['rate'],
+        amount_rub=draft['a_rub'],
+        card=draft['c'],
+        date=draft['d'],
+        comment=draft['m'],
+        from_webhook=True
+    )
+    symbol = CURRENCY_SYMBOLS.get(draft['cur'], '₽')
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.answer(
+        f"✅ Продолжаем: {draft['a']:,.0f} {symbol} — {draft['m']}\n\nВыберите категорию:",
+        reply_markup=categories_kb()
+    )
+    await TransactionForm.category.set()
+    await callback.answer()
+
 # === НЕИЗВЕСТНЫЕ СООБЩЕНИЯ ===
 @dp.message_handler(state="*")
 async def unknown_message(message: types.Message, state: FSMContext):
@@ -903,6 +964,14 @@ def webhook_transaction():
             "a": amount, "m": merchant, "c": card, "d": date,
             "cur": currency, "rate": rate, "a_rub": amount_rub
         }
+        # Автосохранение в черновики
+        draft_id = str(uuid.uuid4())[:8]
+        if int(user_id) not in saved_drafts:
+            saved_drafts[int(user_id)] = []
+        saved_drafts[int(user_id)].append({
+            "id": draft_id, "a": amount, "m": merchant, "c": card, "d": date,
+            "cur": currency, "rate": rate, "a_rub": amount_rub
+        })
 
         kb = types.InlineKeyboardMarkup(row_width=2)
         kb.add(
@@ -936,6 +1005,11 @@ async def process_webhook_callback(callback: types.CallbackQuery, state: FSMCont
     if not tx:
         await callback.message.edit_text("❌ Транзакция устарела.")
         return
+    # Удаляем из черновиков если там есть
+    user_id_cb = callback.from_user.id
+    if user_id_cb in saved_drafts:
+        saved_drafts[user_id_cb] = [d for d in saved_drafts[user_id_cb] 
+                                     if not (d['a'] == tx['a'] and d['m'] == tx['m'] and d['d'] == tx['d'])]
     await state.update_data(
         amount=tx.get('a', 0),
         currency=tx.get('cur', 'RUB'),
