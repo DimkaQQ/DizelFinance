@@ -872,6 +872,8 @@ def webhook_transaction():
         if not user_id or (ALLOWED_IDS and int(user_id) not in ALLOWED_IDS):
             return jsonify({"status": "error", "message": "Unauthorized"}), 403
 
+        logging.info(f"Webhook data: {json.dumps(data, ensure_ascii=False)}")
+
         amount = float(data.get('amount', 0))
         currency = data.get('currency', 'RUB')
         merchant = data.get('merchant', 'Неизвестно')
