@@ -796,7 +796,7 @@ async def my_transactions(message: types.Message):
         for rec in last_10:
             currency = rec.get('Валюта', 'RUB')
             amount = rec.get('Сумма', 0)
-            amount_rub = rec.get('Сумма в RUB', amount)
+            amount_rub = rec.get('Сумма в Руб', rec.get('Сумма в RUB', amount))
             symbol = CURRENCY_SYMBOLS.get(currency, currency)
             text += f"📅 {rec.get('Дата', '')}\n"
             text += f"📂 {rec.get('Категория', '')} → {rec.get('Подкатегория', '')}\n"
