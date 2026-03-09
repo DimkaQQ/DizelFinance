@@ -792,6 +792,8 @@ async def my_transactions(message: types.Message):
             await message.answer("📂 Нет транзакций.", reply_markup=main_menu_kb())
             return
         last_10 = records[-10:]
+        logging.info(f"KEYS: {list(records[-1].keys())}")
+        logging.info(f"REC EUR: {records[-3]}")
         text = "📋 <b>Последние 10 транзакций:</b>\n\n"
         for rec in last_10:
             currency = str(rec.get('Валюта', 'RUB')).strip() or 'RUB'
