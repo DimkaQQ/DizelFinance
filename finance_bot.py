@@ -355,8 +355,8 @@ async def save_transaction_to_sheets(data: dict):
         rate if currency != 'RUB' else '',
         amount_rub,
         data.get('card', ''),
-        data.get('comment', '')
-        data.get('tx_type', 'Расход')
+        data.get('comment', ''),
+        data.get('tx_type', 'Расход'),  # колонка J
     ]
     ws.append_row(new_row)
 
@@ -1118,23 +1118,10 @@ def webhook_sms():
         symbol = CURRENCY_SYMBOLS.get(currency, currency)
         tx_icon = "💰" if tx_type_w == 'Доход' else "💸"
 
-        message_text = (
-            f"📱 <b>SMS транзакция:</b>
-
-"
-            f"{tx_icon} {tx_type_w}
-"
-            f"💵 {amount:,.2f} {symbol}
-"
-        )
+        message_text = f"📱 <b>SMS транзакция:</b>\n\n{tx_icon} {tx_type_w}\n💵 {amount:,.2f} {symbol}\n"
         if currency != 'RUB':
-            message_text += f"🔄 В рублях: {amount_rub:,.2f} ₽
-"
-        message_text += f"🏪 {merchant}
-💳 {card}
-📅 {date}
-
-Записать?"
+            message_text += f"🔄 В рублях: {amount_rub:,.2f} ₽\n"
+        message_text += f"🏪 {merchant}\n💳 {card}\n📅 {date}\n\nЗаписать?"
 
         tx_id = str(uuid.uuid4())[:8]
         pending_transactions[tx_id] = {
@@ -1218,19 +1205,10 @@ async def handle_sms_text(message: types.Message, state: FSMContext):
         types.InlineKeyboardButton("❌ Пропустить", callback_data="wb|no")
     )
 
-    preview = f"📱 <b>SMS распознано:</b>
-
-{tx_icon} {tx_type_w}
-💵 {amount:,.2f} {symbol}"
+    preview = f"📱 <b>SMS распознано:</b>\n\n{tx_icon} {tx_type_w}\n💵 {amount:,.2f} {symbol}"
     if currency != 'RUB':
-        preview += f"
-🔄 {amount_rub:,.2f} ₽"
-    preview += f"
-🏪 {merchant}
-💳 {card}
-📅 {date}
-
-Выберите категорию:"
+        preview += f"\n🔄 {amount_rub:,.2f} ₽"
+    preview += f"\n🏪 {merchant}\n💳 {card}\n📅 {date}\n\nВыберите категорию:"
     await message.answer(preview, parse_mode="HTML", reply_markup=kb)
 
 # === WEBHOOK БЫСТРЫЕ КАТЕГОРИИ ===
