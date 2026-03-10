@@ -21,11 +21,64 @@ from aiogram.dispatcher.filters.state import State, StatesGroup
 from flask import Flask, request, jsonify
 
 # ============================================================
-# Глобальные хранилища
+# Глобальные хранилища (сессии — в памяти)
 # ============================================================
 pending_transactions = {}
 pdf_sessions = {}
-saved_drafts = {}  # user_id -> list of draft transactions
+
+# ============================================================
+# SQLite — постоянное хранилище черновиков
+# ============================================================
+import sqlite3
+
+DB_PATH = "/opt/DizelFinance/DizelFinance/drafts.db"
+
+def db_init():
+    con = sqlite3.connect(DB_PATH)
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS drafts ("
+        "id TEXT PRIMARY KEY, user_id INTEGER, amount REAL, currency TEXT, "
+        "rate REAL, amount_rub REAL, card TEXT, date TEXT, merchant TEXT, "
+        "tx_type TEXT, created_at TEXT)"
+    )
+    con.commit()
+    con.close()
+
+db_init()
+
+def drafts_get(user_id: int) -> list:
+    con = sqlite3.connect(DB_PATH)
+    rows = con.execute(
+        "SELECT id,amount,currency,rate,amount_rub,card,date,merchant,tx_type "
+        "FROM drafts WHERE user_id=? ORDER BY created_at DESC",
+        (user_id,)
+    ).fetchall()
+    con.close()
+    return [{"id":r[0],"a":r[1],"cur":r[2],"rate":r[3],"a_rub":r[4],
+             "c":r[5],"d":r[6],"m":r[7],"tx_type":r[8]} for r in rows]
+
+def drafts_add(user_id: int, draft: dict):
+    con = sqlite3.connect(DB_PATH)
+    con.execute(
+        "INSERT OR REPLACE INTO drafts VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (draft["id"], user_id, draft["a"], draft["cur"], draft["rate"],
+         draft["a_rub"], draft["c"], draft["d"], draft["m"],
+         draft.get("tx_type","Расход"), datetime.now().isoformat())
+    )
+    con.commit()
+    con.close()
+
+def drafts_remove(draft_id: str):
+    con = sqlite3.connect(DB_PATH)
+    con.execute("DELETE FROM drafts WHERE id=?", (draft_id,))
+    con.commit()
+    con.close()
+
+def drafts_clear(user_id: int):
+    con = sqlite3.connect(DB_PATH)
+    con.execute("DELETE FROM drafts WHERE user_id=?", (user_id,))
+    con.commit()
+    con.close()
 
 # ============================================================
 # Настройка
@@ -187,23 +240,6 @@ def ask_gemini(prompt: str, image_bytes: bytes = None, mime_type: str = "image/j
 # Угадать категорию через AI
 # ============================================================
 def guess_category(merchant: str, amount: float) -> tuple:
-    # Сначала ищем в истории таблицы
-    try:
-        ws = sh.worksheet("Транзакции")
-        records = ws.get_all_records()
-        merchant_lower = merchant.strip().lower()
-        for rec in reversed(records):  # с конца — свежие важнее
-            place = str(rec.get("Место", "")).strip().lower()
-            if place and merchant_lower and (place in merchant_lower or merchant_lower in place):
-                cat = rec.get("Категория", "")
-                sub = rec.get("Подкатегория", "")
-                if cat and cat in CATEGORIES:
-                    logging.info(f"Category from history: {merchant} → {cat}/{sub}")
-                    return cat, sub
-    except Exception as e:
-        logging.error(f"Ошибка поиска в истории: {e}")
-
-    # Если не нашли — спрашиваем AI
     subcategories_str = json.dumps(CATEGORIES, ensure_ascii=False)
     prompt = f"""Определи категорию и подкатегорию транзакции.
 
@@ -218,9 +254,9 @@ def guess_category(merchant: str, amount: float) -> tuple:
 
 Выбирай ТОЛЬКО из предложенных категорий и подкатегорий."""
     try:
-        result = ask_gemini(prompt)
-        data = extract_json(result)
-        category = data.get("category", "Прочее")
+        result   = ask_gemini(prompt)
+        data     = extract_json(result)
+        category    = data.get("category", "Прочее")
         subcategory = data.get("subcategory", "")
         if category not in CATEGORIES:
             category = "Прочее"
@@ -230,6 +266,7 @@ def guess_category(merchant: str, amount: float) -> tuple:
     except Exception as e:
         logging.error(f"Ошибка угадывания категории: {e}")
         return "Прочее", ""
+
 # ============================================================
 # Парсинг PDF
 # ============================================================
@@ -641,7 +678,6 @@ async def handle_pdf(message: types.Message, state: FSMContext):
             rate       = get_cbr_rate(currency)
             amount_rub = round(float(tx.get("amount", 0)) * rate, 2)
 
-            category, subcategory = guess_category(tx.get("merchant", ""), tx.get("amount", 0))
             enriched.append({
                 **tx,
                 "category":     category,
@@ -866,9 +902,7 @@ async def process_category(message: types.Message, state: FSMContext):
         data = await state.get_data()
         if data.get("from_webhook") and data.get("amount"):
             user_id = message.from_user.id
-            if user_id not in saved_drafts:
-                saved_drafts[user_id] = []
-            saved_drafts[user_id].append({
+            drafts_add(user_id, {
                 "id":    str(uuid.uuid4())[:8],
                 "a":     data["amount"],
                 "m":     data.get("comment", ""),
@@ -877,6 +911,7 @@ async def process_category(message: types.Message, state: FSMContext):
                 "cur":   data.get("currency", "RUB"),
                 "rate":  data.get("rate", 1.0),
                 "a_rub": data.get("amount_rub", data["amount"]),
+                "tx_type": data.get("tx_type", "Расход"),
             })
         await TransactionForm.waiting_for_action.set()
         await message.answer("Выберите действие:", reply_markup=main_menu_kb())
@@ -1181,7 +1216,7 @@ async def settings(message: types.Message):
 @dp.message_handler(lambda m: m.text == "📥 Отложенные", state="*")
 async def show_drafts(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
-    drafts  = saved_drafts.get(user_id, [])
+    drafts  = drafts_get(user_id)
     if not drafts:
         await message.answer("📭 Нет отложенных транзакций.", reply_markup=main_menu_kb())
         return
@@ -1203,20 +1238,20 @@ async def process_draft(callback: types.CallbackQuery, state: FSMContext):
     action  = callback.data.split("|")[1]
 
     if action == "clear":
-        saved_drafts.pop(user_id, None)
+        drafts_clear(user_id)
         await callback.message.edit_text("🗑 Все черновики удалены.")
         await callback.answer()
         return
 
     draft_id = action
-    drafts   = saved_drafts.get(user_id, [])
+    drafts   = drafts_get(user_id)
     draft    = next((d for d in drafts if d["id"] == draft_id), None)
     if not draft:
         await callback.message.edit_text("❌ Черновик не найден.")
         await callback.answer()
         return
 
-    saved_drafts[user_id] = [d for d in drafts if d["id"] != draft_id]
+    drafts_remove(draft_id)
     await state.update_data(
         amount=draft["a"],
         currency=draft["cur"],
@@ -1283,9 +1318,7 @@ async def handle_screenshot(message: types.Message, state: FSMContext):
                 "tx_type": tx_type_w,
             }
             user_id = message.from_user.id
-            if user_id not in saved_drafts:
-                saved_drafts[user_id] = []
-            saved_drafts[user_id].append({
+            drafts_add(user_id, {
                 "id": str(uuid.uuid4())[:8], "a": amount, "m": merchant, "c": card, "d": date,
                 "cur": currency, "rate": rate, "a_rub": amount_rub, "tx_type": tx_type_w,
             })
@@ -1386,9 +1419,7 @@ async def handle_sms_text(message: types.Message, state: FSMContext):
         "cur": currency, "rate": rate, "a_rub": amount_rub, "tx_type": tx_type_w,
     }
     user_id = message.from_user.id
-    if user_id not in saved_drafts:
-        saved_drafts[user_id] = []
-    saved_drafts[user_id].append({
+    drafts_add(user_id, {
         "id": str(uuid.uuid4())[:8], "a": amount, "m": merchant, "c": card, "d": date,
         "cur": currency, "rate": rate, "a_rub": amount_rub, "tx_type": tx_type_w,
     })
@@ -1423,11 +1454,6 @@ async def process_webhook_quick(callback: types.CallbackQuery, state: FSMContext
         return
 
     user_id = callback.from_user.id
-    if user_id in saved_drafts:
-        saved_drafts[user_id] = [
-            d for d in saved_drafts[user_id]
-            if not (d["a"] == tx["a"] and d["m"] == tx["m"] and d["d"] == tx["d"])
-        ]
 
     await state.update_data(
         amount=tx["a"], currency=tx["cur"], rate=tx["rate"],
@@ -1483,11 +1509,6 @@ async def process_webhook_callback(callback: types.CallbackQuery, state: FSMCont
         await callback.message.edit_text("❌ Транзакция устарела.")
         return
     user_id = callback.from_user.id
-    if user_id in saved_drafts:
-        saved_drafts[user_id] = [
-            d for d in saved_drafts[user_id]
-            if not (d["a"] == tx["a"] and d["m"] == tx["m"] and d["d"] == tx["d"])
-        ]
     await state.update_data(
         amount=tx.get("a", 0),
         currency=tx.get("cur", "RUB"),
@@ -1543,9 +1564,7 @@ def webhook_transaction():
             "a": amount, "m": merchant, "c": card, "d": date,
             "cur": currency, "rate": rate, "a_rub": amount_rub, "tx_type": tx_type_w,
         }
-        if uid_int not in saved_drafts:
-            saved_drafts[uid_int] = []
-        saved_drafts[uid_int].append({
+        drafts_add(uid_int, {
             "id": str(uuid.uuid4())[:8], "a": amount, "m": merchant, "c": card, "d": date,
             "cur": currency, "rate": rate, "a_rub": amount_rub, "tx_type": tx_type_w,
         })
@@ -1611,9 +1630,7 @@ def webhook_sms():
             "a": amount, "m": merchant, "c": card, "d": date,
             "cur": currency, "rate": rate, "a_rub": amount_rub, "tx_type": tx_type_w,
         }
-        if uid_int not in saved_drafts:
-            saved_drafts[uid_int] = []
-        saved_drafts[uid_int].append({
+        drafts_add(uid_int, {
             "id": str(uuid.uuid4())[:8], "a": amount, "m": merchant, "c": card, "d": date,
             "cur": currency, "rate": rate, "a_rub": amount_rub, "tx_type": tx_type_w,
         })
