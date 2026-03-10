@@ -994,6 +994,7 @@ app = Flask(__name__)
 def webhook_transaction():
     try:
         data = request.json
+        logging.info(f"WEBHOOK DATA: {data}")
         user_id = data.get('user_id')
         if not user_id or (ALLOWED_IDS and int(user_id) not in ALLOWED_IDS):
             return jsonify({"status": "error", "message": "Unauthorized"}), 403
