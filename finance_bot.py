@@ -16,6 +16,7 @@ import requests
 import json
 import uuid
 import xml.etree.ElementTree as ET
+import google.generativeai as genai
 
 pending_transactions = {}
 pdf_sessions = {}
@@ -28,7 +29,7 @@ SHEET_URL = os.getenv("SHEET_URL")
 ADMIN_ID = os.getenv("ADMIN_TELEGRAM_ID")
 ALLOWED_IDS = set(int(x.strip()) for x in os.getenv("ALLOWED_USER_IDS", "").split(",") if x.strip())
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = "gemini-2.0-flash"  # ← МЕНЯЙ МОДЕЛЬ ЗДЕСЬ
+GEMINI_MODEL = "gemini-2.5-flash-preview-04-17"  # ← МЕНЯЙ МОДЕЛЬ ЗДЕСЬ
 
 logging.basicConfig(level=logging.INFO)
 
@@ -56,19 +57,23 @@ def get_cbr_rate(currency: str) -> float:
     return 1.0
 
 # === GEMINI API ===
+def _get_gemini_model():
+    genai.configure(api_key=GEMINI_API_KEY)
+    return genai.GenerativeModel(GEMINI_MODEL)
+
 def ask_gemini(prompt: str, pdf_base64: str = None) -> str:
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+    model = _get_gemini_model()
     parts = []
     if pdf_base64:
-        parts.append({"inline_data": {"mime_type": "application/pdf", "data": pdf_base64}})
-    parts.append({"text": prompt})
-    body = {"contents": [{"parts": parts}], "generationConfig": {"temperature": 0.1}}
-    response = requests.post(url, json=body, timeout=60)
-    data = response.json()
-    if "candidates" not in data:
-        logging.error(f"Gemini error response: {json.dumps(data, ensure_ascii=False)[:500]}")
-        raise ValueError(f"Gemini API error: {data.get('error', {}).get('message', str(data))}")
-    return data["candidates"][0]["content"]["parts"][0]["text"]
+        parts.append({"mime_type": "application/pdf", "data": base64.b64decode(pdf_base64)})
+    parts.append(prompt)
+    response = model.generate_content(parts, generation_config={"temperature": 0.1})
+    if hasattr(response, "text") and response.text:
+        return response.text
+    try:
+        return response.candidates[0].content.parts[0].text
+    except Exception as e:
+        raise ValueError(f"Gemini API error: {e}")
 
 # === УГАДАТЬ КАТЕГОРИЮ ===
 def guess_category(merchant: str, amount: float) -> tuple:
@@ -1023,9 +1028,8 @@ SMS: {sms_text}
         return None
 
 # === ПАРСИНГ СКРИНШОТА ===
-def parse_screenshot_transactions(image_base64: str, mime_type: str = "image/jpeg") -> list:
-    """Парсит скриншот банковского приложения через Gemini Vision"""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+def parse_screenshot_transactions(image_bytes: bytes, mime_type: str = "image/jpeg") -> list:
+    """Парсит скриншот банковского приложения через Gemini Vision SDK"""
     prompt = """Это скриншот банковского приложения или выписки. Извлеки ВСЕ транзакции которые видишь.
 
 Для каждой транзакции верни:
@@ -1041,19 +1045,14 @@ def parse_screenshot_transactions(image_base64: str, mime_type: str = "image/jpe
 
 Если транзакций нет — верни []
 Игнорируй: заголовки, балансы счёта, рекламные блоки."""
-
-    parts = [
-        {"inline_data": {"mime_type": mime_type, "data": image_base64}},
-        {"text": prompt}
-    ]
-    body = {"contents": [{"parts": parts}], "generationConfig": {"temperature": 0.1}}
     try:
-        response = requests.post(url, json=body, timeout=60)
-        data = response.json()
-        if "candidates" not in data:
-            logging.error(f"Gemini Vision error: {json.dumps(data, ensure_ascii=False)[:300]}")
-            raise ValueError(data.get('error', {}).get('message', 'Unknown error'))
-        raw = data["candidates"][0]["content"]["parts"][0]["text"]
+        model = _get_gemini_model()
+        image_part = {"mime_type": mime_type, "data": image_bytes}
+        response = model.generate_content([image_part, prompt], generation_config={"temperature": 0.1})
+        if hasattr(response, "text") and response.text:
+            raw = response.text
+        else:
+            raw = response.candidates[0].content.parts[0].text
         raw = raw.strip().replace('```json', '').replace('```', '').strip()
         result = json.loads(raw)
         return result if isinstance(result, list) else []
@@ -1073,9 +1072,9 @@ async def handle_screenshot(message: types.Message, state: FSMContext):
         photo = message.photo[-1]
         file = await bot.get_file(photo.file_id)
         file_bytes = await bot.download_file(file.file_path)
-        image_base64 = base64.b64encode(file_bytes.read()).decode('utf-8')
+        image_bytes = file_bytes.read()
 
-        transactions = parse_screenshot_transactions(image_base64)
+        transactions = parse_screenshot_transactions(image_bytes)
 
         if not transactions:
             await message.answer(
