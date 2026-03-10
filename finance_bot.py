@@ -16,7 +16,8 @@ import requests
 import json
 import uuid
 import xml.etree.ElementTree as ET
-import google.generativeai as genai
+from dashscope import MultiModalConversation
+import dashscope
 
 pending_transactions = {}
 pdf_sessions = {}
@@ -24,12 +25,16 @@ saved_drafts = {}  # user_id -> list of draft transactions
 
 # === Настройка ===
 load_dotenv()
+QWEN_API_KEY = os.getenv("QWEN_API_KEY")  
+dashscope.api_key = QWEN_API_KEY
+# Модель для скриншотов: qwen-vl-max или qwen-vl-plus
+# Модель для текста: qwen-turbo или qwen-plus
+VISION_MODEL = "qwen-vl-max"
+TEXT_MODEL = "qwen-plus"
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 SHEET_URL = os.getenv("SHEET_URL")
 ADMIN_ID = os.getenv("ADMIN_TELEGRAM_ID")
 ALLOWED_IDS = set(int(x.strip()) for x in os.getenv("ALLOWED_USER_IDS", "").split(",") if x.strip())
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = "gemini-2.5-flash-preview-05-20"  # ← МЕНЯЙ МОДЕЛЬ ЗДЕСЬ
 
 logging.basicConfig(level=logging.INFO)
 
@@ -56,46 +61,66 @@ def get_cbr_rate(currency: str) -> float:
         logging.error(f"Ошибка получения курса ЦБ: {e}")
     return 1.0
 
-# === GEMINI API ===
-def _get_gemini_model():
-    genai.configure(api_key=GEMINI_API_KEY)
-    return genai.GenerativeModel(GEMINI_MODEL)
 
-def ask_gemini(prompt: str, pdf_base64: str = None) -> str:
-    import hashlib, os
-    cache_key = hashlib.md5((prompt + (pdf_base64 or "")[:100]).encode()).hexdigest()
-    cache_file = f"/tmp/gemini_cache_{cache_key}.json"
-    if not pdf_base64 and os.path.exists(cache_file):
+def ask_qwen(prompt: str, image_bytes: bytes = None, mime_type: str = "image/jpeg", is_pdf: bool = False) -> str:
+    import hashlib, os, base64, time
+    
+    # Кэширование для текстовых запросов
+    cache_key = hashlib.md5((prompt + (image_bytes[:100] if image_bytes else b"")).encode()).hexdigest()
+    cache_file = f"/tmp/qwen_cache_{cache_key}.json"
+    
+    if not image_bytes and os.path.exists(cache_file):
         try:
-            with open(cache_file) as f:
+            with open(cache_file, encoding="utf-8") as f:
                 result = json.load(f)
-            logging.info("Gemini text cache HIT")
-            return result
-        except Exception:
+                logging.info("Qwen cache HIT")
+                return result
+        except:
             pass
-
-    model = _get_gemini_model()
-    parts = []
-    if pdf_base64:
-        parts.append({"mime_type": "application/pdf", "data": base64.b64decode(pdf_base64)})
-    parts.append(prompt)
-    response = model.generate_content(parts, generation_config={"temperature": 0.1})
-    if hasattr(response, "text") and response.text:
-        text = response.text
-    else:
+    
+    # Подготовка сообщений
+    messages = [{"role": "user", "content": []}]
+    
+    if image_bytes:
+        # Для Qwen-VL: изображение в base64 или URL
+        image_b64 = base64.b64encode(image_bytes).decode('utf-8')
+        # Вариант 1: через data URL (поддерживается qwen-vl-max)
+        image_url = f"data:{mime_type};base64,{image_b64}"
+        messages[0]["content"].append({"image": image_url})
+    
+    messages[0]["content"].append({"text": prompt})
+    
+    # Выбор модели
+    model = VISION_MODEL if image_bytes else TEXT_MODEL
+    
+    # Retry-логика (у Qwen бывают таймауты)
+    for attempt in range(3):
         try:
-            text = response.candidates[0].content.parts[0].text
+            response = MultiModalConversation.call(model=model, messages=messages)
+            if response.code == 200:
+                if hasattr(response.output, 'text'):
+                    text = response.output.text
+                elif hasattr(response.output, 'choices'):
+                    content = response.output.choices[0].message.content
+                    if isinstance(content, list):
+                        text = content[0].get('text', str(content))
+                    else:
+                        text = str(content)
+                else:
+                    text = str(response.output)
+                # Кэшируем только текстовые ответы
+                if not image_bytes:
+                    with open(cache_file, 'w', encoding='utf-8') as f:
+                        json.dump(text, f, ensure_ascii=False)
+                return text.strip()
+            else:
+                logging.warning(f"Qwen API error: {response.code} - {response.message}")
+                time.sleep(2 ** attempt)  # экспоненциальная задержка
         except Exception as e:
-            raise ValueError(f"Gemini API error: {e}")
-
-    # Cache text-only responses (not PDF)
-    if not pdf_base64:
-        try:
-            with open(cache_file, 'w') as f:
-                json.dump(text, f, ensure_ascii=False)
-        except Exception:
-            pass
-    return text
+            logging.error(f"Qwen API exception (attempt {attempt+1}): {e}")
+            time.sleep(2 ** attempt)
+    
+    raise ValueError("Не удалось получить ответ от Qwen API после 3 попыток")
 
 # === УГАДАТЬ КАТЕГОРИЮ ===
 def guess_category(merchant: str, amount: float) -> tuple:
@@ -113,7 +138,7 @@ def guess_category(merchant: str, amount: float) -> tuple:
 
 Выбирай ТОЛЬКО из предложенных категорий и подкатегорий."""
     try:
-        result = ask_gemini(prompt)
+        result = ask_qwen(prompt)
         result = result.strip().replace('```json', '').replace('```', '').strip()
         data = json.loads(result)
         category = data.get("category", "Прочее")
@@ -129,30 +154,42 @@ def guess_category(merchant: str, amount: float) -> tuple:
 
 # === ПАРСИНГ PDF ===
 def parse_pdf_transactions(pdf_base64: str) -> list:
-    prompt = """Извлеки все транзакции расходов из этой банковской выписки.
-
-Для каждой транзакции верни:
-- date: дата в формате ДД.ММ.ГГГГ
-- amount: сумма числом (положительное)
-- currency: валюта (RUB/USD/EUR/KZT)
-- merchant: название места/магазина
-- card: название карты или счёта если указано, иначе пустая строка
-
-Игнорируй: пополнения, переводы между своими счетами, начисления процентов.
-
-Ответь ТОЛЬКО в формате JSON массива без markdown:
-[{"date": "...", "amount": 0.0, "currency": "RUB", "merchant": "...", "card": ""}]
-
-Если транзакций нет — верни пустой массив []."""
+    import fitz  # PyMuPDF: pip install PyMuPDF
+    import io
     try:
-        result = ask_gemini(prompt, pdf_base64)
-        result = result.strip().replace('```json', '').replace('```', '').strip()
-        transactions = json.loads(result)
-        return transactions if isinstance(transactions, list) else []
+        pdf_bytes = base64.b64decode(pdf_base64)
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        all_transactions = []
+        
+        for i, page in enumerate(doc):
+            # Рендерим страницу в изображение (PNG)
+            pix = page.get_pixmap(matrix=fitz.Matrix(150/72, 150/72))
+            img_bytes = pix.tobytes("png")
+            
+            prompt = f"""Страница {i+1} банковской выписки.
+Извлеки ВСЕ транзакции РАСХОДОВ. Для каждой верни:
+- date: ДД.ММ.ГГГГ
+- amount: число (положительное)
+- currency: RUB/USD/EUR/KZT
+- merchant: название магазина/места
+- card: карта если указана, иначе ""
+Игнорируй: пополнения, переводы между счетами, проценты.
+Ответ ТОЛЬКО JSON массивом:
+[{{"date": "01.01.2024", "amount": 1500, "currency": "RUB", "merchant": "Пятёрочка", "card": "Тинькофф"}}]
+Если транзакций нет — []."""
+            
+            result = ask_qwen(prompt, image_bytes=img_bytes, mime_type="image/png", is_pdf=True)
+            result = result.strip().replace('```json', '').replace('```', '').strip()
+            page_tx = json.loads(result)
+            if isinstance(page_tx, list):
+                all_transactions.extend(page_tx)
+        
+        doc.close()
+        return all_transactions
     except Exception as e:
-        logging.error(f"Ошибка парсинга PDF: {e}")
+        logging.error(f"Ошибка парсинга PDF через Qwen: {e}")
         return []
-
+        
 # === ПРОВЕРКА ДУБЛИКАТОВ ===
 def get_existing_transactions() -> set:
     try:
@@ -434,7 +471,7 @@ async def handle_pdf(message: types.Message, state: FSMContext):
         file_bytes = await bot.download_file(file.file_path)
         pdf_base64 = base64.b64encode(file_bytes.read()).decode('utf-8')
 
-        await message.answer("🤖 Claude анализирует транзакции...")
+        await message.answer("🤖 AI анализирует транзакции...")
         transactions = parse_pdf_transactions(pdf_base64)
 
         if not transactions:
@@ -947,7 +984,7 @@ async def settings(message: types.Message):
         f"⚙️ <b>Настройки</b>\n\n"
         f"👤 Ваш ID: <code>{message.from_user.id}</code>\n"
         f"🗄 Google Sheets: {'✅ Подключён' if sh else '❌ Не подключён'}\n"
-        f"🤖 Gemini API: {'✅ Подключён' if GEMINI_API_KEY else '❌ Не настроен'}",
+        f"🤖 Qwen API: {'✅ Подключён' if QWEN_API_KEY else '❌ Не настроен'}",
         parse_mode="HTML", reply_markup=main_menu_kb()
     )
 
@@ -1039,7 +1076,7 @@ SMS: {sms_text}
 
 Если это НЕ банковское SMS с транзакцией — верни {{"error": "not_transaction"}}"""
     try:
-        result = ask_gemini(prompt)
+        result = ask_qwen(prompt)
         result = result.strip().replace('```json', '').replace('```', '').strip()
         data = json.loads(result)
         if data.get('error') == 'not_transaction':
@@ -1051,66 +1088,28 @@ SMS: {sms_text}
 
 # === ПАРСИНГ СКРИНШОТА ===
 def parse_screenshot_transactions(image_bytes: bytes, mime_type: str = "image/jpeg") -> list:
-    """Парсит скриншот банковского приложения через Gemini Vision SDK"""
-    prompt = """Это скриншот банковского приложения или выписки. Извлеки ВСЕ транзакции которые видишь.
-
-Для каждой транзакции верни:
-- date: дата в формате ДД.ММ.ГГГГ (если только месяц/день — добавь текущий год)
-- amount: сумма числом (положительное)
-- currency: валюта (RUB/USD/EUR/KZT/IDR/VND) — определи по символу ₽/$//₸/Rp/₫
-- merchant: название места, магазина или описание операции
-- card: название карты или последние 4 цифры если видно, иначе пустая строка
-- tx_type: "Расход" если списание/покупка/оплата, "Доход" если зачисление/пополнение
-
-Ответь ТОЛЬКО в формате JSON массива без markdown:
-[{"date": "ДД.ММ.ГГГГ", "amount": 0.0, "currency": "RUB", "merchant": "...", "card": "", "tx_type": "Расход"}]
-
-Если транзакций нет — верни []
-Игнорируй: заголовки, балансы счёта, рекламные блоки."""
+    prompt = """Это скриншот банковского приложения. Извлеки ВСЕ транзакции.
+Для каждой верни:
+- date: ДД.ММ.ГГГГ (если нет года — добавь текущий)
+- amount: число (положительное)
+- currency: RUB/USD/EUR/KZT/IDR/VND (определи по символу ₽/$/€/₸/Rp/₫)
+- merchant: название места или описание
+- card: карта или последние 4 цифры, иначе ""
+- tx_type: "Расход" (списание) или "Доход" (зачисление)
+Ответ ТОЛЬКО JSON массивом:
+[{"date": "01.01.2024", "amount": 1500, "currency": "RUB", "merchant": "Пятёрочка", "card": "Тинькофф", "tx_type": "Расход"}]
+Если нет транзакций — [].
+Игнорируй: баланс, заголовки, рекламу."""
+    
     try:
-        import hashlib
-        cache_key = "screenshot:" + hashlib.md5(image_bytes).hexdigest()
-        cached = None
-        try:
-            from cachetools import TTLCache
-        except ImportError:
-            pass
-
-        # Simple file-based cache check
-        cache_file = f"/tmp/gemini_cache_{hashlib.md5(image_bytes).hexdigest()}.json"
-        import os
-        if os.path.exists(cache_file):
-            try:
-                with open(cache_file) as f:
-                    cached_data = json.load(f)
-                logging.info("Screenshot cache HIT")
-                return cached_data
-            except Exception:
-                pass
-
-        model = _get_gemini_model()
-        image_part = {"mime_type": mime_type, "data": image_bytes}
-        response = model.generate_content([image_part, prompt], generation_config={"temperature": 0.1})
-        if hasattr(response, "text") and response.text:
-            raw = response.text
-        else:
-            raw = response.candidates[0].content.parts[0].text
-        raw = raw.strip().replace('```json', '').replace('```', '').strip()
-        result = json.loads(raw)
-        transactions = result if isinstance(result, list) else []
-
-        # Save to cache
-        try:
-            with open(cache_file, 'w') as f:
-                json.dump(transactions, f, ensure_ascii=False)
-        except Exception:
-            pass
-
-        return transactions
+        result = ask_qwen(prompt, image_bytes=image_bytes, mime_type=mime_type)
+        result = result.strip().replace('```json', '').replace('```', '').strip()
+        transactions = json.loads(result)
+        return transactions if isinstance(transactions, list) else []
     except Exception as e:
-        logging.error(f"Ошибка парсинга скриншота: {e}")
+        logging.error(f"Ошибка парсинга скриншота через Qwen: {e}")
         return []
-
+        
 # === ОБРАБОТКА ФОТО (СКРИНШОТ БАНКА) ===
 @dp.message_handler(content_types=types.ContentType.PHOTO, state="*")
 async def handle_screenshot(message: types.Message, state: FSMContext):
