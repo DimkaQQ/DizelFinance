@@ -187,6 +187,23 @@ def ask_gemini(prompt: str, image_bytes: bytes = None, mime_type: str = "image/j
 # Угадать категорию через AI
 # ============================================================
 def guess_category(merchant: str, amount: float) -> tuple:
+    # Сначала ищем в истории таблицы
+    try:
+        ws = sh.worksheet("Транзакции")
+        records = ws.get_all_records()
+        merchant_lower = merchant.strip().lower()
+        for rec in reversed(records):  # с конца — свежие важнее
+            place = str(rec.get("Место", "")).strip().lower()
+            if place and merchant_lower and (place in merchant_lower or merchant_lower in place):
+                cat = rec.get("Категория", "")
+                sub = rec.get("Подкатегория", "")
+                if cat and cat in CATEGORIES:
+                    logging.info(f"Category from history: {merchant} → {cat}/{sub}")
+                    return cat, sub
+    except Exception as e:
+        logging.error(f"Ошибка поиска в истории: {e}")
+
+    # Если не нашли — спрашиваем AI
     subcategories_str = json.dumps(CATEGORIES, ensure_ascii=False)
     prompt = f"""Определи категорию и подкатегорию транзакции.
 
@@ -201,9 +218,9 @@ def guess_category(merchant: str, amount: float) -> tuple:
 
 Выбирай ТОЛЬКО из предложенных категорий и подкатегорий."""
     try:
-        result   = ask_gemini(prompt)
-        data     = extract_json(result)
-        category    = data.get("category", "Прочее")
+        result = ask_gemini(prompt)
+        data = extract_json(result)
+        category = data.get("category", "Прочее")
         subcategory = data.get("subcategory", "")
         if category not in CATEGORIES:
             category = "Прочее"
@@ -213,7 +230,6 @@ def guess_category(merchant: str, amount: float) -> tuple:
     except Exception as e:
         logging.error(f"Ошибка угадывания категории: {e}")
         return "Прочее", ""
-
 # ============================================================
 # Парсинг PDF
 # ============================================================
@@ -625,6 +641,7 @@ async def handle_pdf(message: types.Message, state: FSMContext):
             rate       = get_cbr_rate(currency)
             amount_rub = round(float(tx.get("amount", 0)) * rate, 2)
 
+            category, subcategory = guess_category(tx.get("merchant", ""), tx.get("amount", 0))
             enriched.append({
                 **tx,
                 "category":     category,
