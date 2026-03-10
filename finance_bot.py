@@ -352,7 +352,8 @@ async def save_transaction_to_sheets(data: dict):
         rate if currency != 'RUB' else '',
         amount_rub,
         data.get('card', ''),
-        data.get('comment', '')
+        data.get('comment', ''),
+        data.get('tx_type', 'Расход'),  # колонка J
     ]
     ws.append_row(new_row)
 
@@ -970,6 +971,7 @@ async def process_draft(callback: types.CallbackQuery, state: FSMContext):
         card=draft['c'],
         date=draft['d'],
         comment=draft['m'],
+        tx_type=draft.get('tx_type', 'Расход'),
         from_webhook=True
     )
     symbol = CURRENCY_SYMBOLS.get(draft['cur'], '₽')
@@ -994,7 +996,6 @@ app = Flask(__name__)
 def webhook_transaction():
     try:
         data = request.json
-        logging.info(f"WEBHOOK DATA: {data}")
         user_id = data.get('user_id')
         if not user_id or (ALLOWED_IDS and int(user_id) not in ALLOWED_IDS):
             return jsonify({"status": "error", "message": "Unauthorized"}), 403
@@ -1027,7 +1028,8 @@ def webhook_transaction():
             saved_drafts[int(user_id)] = []
         saved_drafts[int(user_id)].append({
             "id": draft_id, "a": amount, "m": merchant, "c": card, "d": date,
-            "cur": currency, "rate": rate, "a_rub": amount_rub
+            "cur": currency, "rate": rate, "a_rub": amount_rub,
+            "tx_type": tx_type_w
         })
 
         # Quick category buttons
@@ -1076,7 +1078,8 @@ async def process_webhook_quick(callback: types.CallbackQuery, state: FSMContext
     await state.update_data(
         amount=tx['a'], currency=tx['cur'], rate=tx['rate'],
         amount_rub=tx['a_rub'], card=tx['c'], date=tx['d'],
-        comment=tx['m'], from_webhook=True, category=category
+        comment=tx['m'], from_webhook=True, category=category,
+        tx_type=tx.get('tx_type', 'Расход')
     )
     
     subs = CATEGORIES.get(category, [])
