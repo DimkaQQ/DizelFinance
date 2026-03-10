@@ -355,8 +355,8 @@ async def save_transaction_to_sheets(data: dict):
         rate if currency != 'RUB' else '',
         amount_rub,
         data.get('card', ''),
-        data.get('comment', ''),
-        data.get('tx_type', 'Расход'),  # колонка J
+        data.get('comment', '')
+        data.get('tx_type', 'Расход')
     ]
     ws.append_row(new_row)
 
