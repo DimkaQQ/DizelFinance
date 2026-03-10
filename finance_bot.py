@@ -29,7 +29,7 @@ SHEET_URL = os.getenv("SHEET_URL")
 ADMIN_ID = os.getenv("ADMIN_TELEGRAM_ID")
 ALLOWED_IDS = set(int(x.strip()) for x in os.getenv("ALLOWED_USER_IDS", "").split(",") if x.strip())
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = "gemini-2.0-flash"  # ← МЕНЯЙ МОДЕЛЬ ЗДЕСЬ
+GEMINI_MODEL = "gemini-2.5-flash-preview-05-20"  # ← МЕНЯЙ МОДЕЛЬ ЗДЕСЬ
 
 logging.basicConfig(level=logging.INFO)
 
