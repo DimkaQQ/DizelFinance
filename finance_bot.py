@@ -15,9 +15,7 @@ import threading
 import requests
 import json
 import uuid
-import xml.etree.ElementTree as ET
-from dashscope import MultiModalConversation
-import dashscope
+import xml.etree.ElementTree as ET 
 
 pending_transactions = {}
 pdf_sessions = {}
@@ -25,12 +23,6 @@ saved_drafts = {}  # user_id -> list of draft transactions
 
 # === Настройка ===
 load_dotenv()
-QWEN_API_KEY = os.getenv("QWEN_API_KEY")  
-dashscope.api_key = QWEN_API_KEY
-# Модель для скриншотов: qwen-vl-max или qwen-vl-plus
-# Модель для текста: qwen-turbo или qwen-plus
-VISION_MODEL = "qwen-vl-max"
-TEXT_MODEL = "qwen-plus"
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 SHEET_URL = os.getenv("SHEET_URL")
 ADMIN_ID = os.getenv("ADMIN_TELEGRAM_ID")
@@ -62,67 +54,76 @@ def get_cbr_rate(currency: str) -> float:
     return 1.0
 
 
-def ask_qwen(prompt: str, image_bytes: bytes = None, mime_type: str = "image/jpeg", is_pdf: bool = False) -> str:
-    import hashlib, os, base64, time
+# === OPENROUTER API ===
+OPENROUTER_MODEL = "google/gemini-2.0-flash-exp:free"  # можно менять
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+
+def ask_openrouter(prompt: str, image_bytes: bytes = None, mime_type: str = "image/jpeg") -> str:
+    import hashlib, os, base64, time, requests
     
-    # === Кэширование ТОЛЬКО для текстовых запросов ===
-    if not image_bytes:
-        cache_key = hashlib.md5(prompt.encode()).hexdigest()
-        cache_file = f"/tmp/qwen_cache_{cache_key}.json"
-        if os.path.exists(cache_file):
-            try:
-                with open(cache_file, encoding="utf-8") as f:
-                    result = json.load(f)
-                    logging.info("Qwen cache HIT")
-                    return result
-            except:
-                pass
-    else:
-        # Для изображений — кэш не используем (или можно по hash изображения)
-        cache_file = None
+    # Кэширование только для текстовых запросов
+    cache_key = hashlib.md5(prompt.encode()).hexdigest() if not image_bytes else None
+    cache_file = f"/tmp/openrouter_cache_{cache_key}.json" if cache_key else None
     
-    # === Подготовка сообщений ===
-    messages = [{"role": "user", "content": []}]
+    if cache_file and os.path.exists(cache_file):
+        try:
+            with open(cache_file, encoding="utf-8") as f:
+                result = json.load(f)
+                logging.info("OpenRouter cache HIT")
+                return result
+        except:
+            pass
     
+    # Подготовка контента
+    content = []
     if image_bytes:
         image_b64 = base64.b64encode(image_bytes).decode('utf-8')
-        image_url = f"data:{mime_type};base64,{image_b64}"
-        messages[0]["content"].append({"image": image_url})
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:{mime_type};base64,{image_b64}"}
+        })
+    content.append({"type": "text", "text": prompt})
     
-    messages[0]["content"].append({"text": prompt})
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://github.com/DimkaQQ/DizelFinance",  # обязательно для OpenRouter
+        "X-Title": "DizelFinance Bot"
+    }
     
-    # === Выбор модели и запрос ===
-    model = VISION_MODEL if image_bytes else TEXT_MODEL
+    payload = {
+        "model": OPENROUTER_MODEL,
+        "messages": [{"role": "user", "content": content}],
+        "temperature": 0.1,
+        "max_tokens": 2000
+    }
     
+    # Retry-логика
     for attempt in range(3):
         try:
-            response = MultiModalConversation.call(model=model, messages=messages)
-            if response.code == 200:
-                if hasattr(response.output, 'text'):
-                    text = response.output.text
-                elif hasattr(response.output, 'choices'):
-                    content = response.output.choices[0].message.content
-                    if isinstance(content, list):
-                        text = content[0].get('text', str(content))
-                    else:
-                        text = str(content)
-                else:
-                    text = str(response.output)
-                
+            response = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=60
+            )
+            if response.status_code == 200:
+                data = response.json()
+                text = data['choices'][0]['message']['content'].strip()
                 # Кэшируем только текстовые ответы
-                if cache_file and not image_bytes:
+                if cache_file:
                     with open(cache_file, 'w', encoding='utf-8') as f:
                         json.dump(text, f, ensure_ascii=False)
-                return text.strip()
+                return text
             else:
-                logging.warning(f"Qwen API error: {response.code} - {response.message}")
+                logging.warning(f"OpenRouter error {response.status_code}: {response.text[:200]}")
                 time.sleep(2 ** attempt)
         except Exception as e:
-            logging.error(f"Qwen API exception (attempt {attempt+1}): {e}")
+            logging.error(f"OpenRouter exception (attempt {attempt+1}): {e}")
             time.sleep(2 ** attempt)
     
-    raise ValueError("Не удалось получить ответ от Qwen API после 3 попыток")
-    
+    raise ValueError("Не удалось получить ответ от OpenRouter после 3 попыток")
+
 # === УГАДАТЬ КАТЕГОРИЮ ===
 def guess_category(merchant: str, amount: float) -> tuple:
     subcategories_str = json.dumps(CATEGORIES, ensure_ascii=False)
@@ -139,7 +140,7 @@ def guess_category(merchant: str, amount: float) -> tuple:
 
 Выбирай ТОЛЬКО из предложенных категорий и подкатегорий."""
     try:
-        result = ask_qwen(prompt)
+        result = ask_openrouter(prompt)
         result = result.strip().replace('```json', '').replace('```', '').strip()
         data = json.loads(result)
         category = data.get("category", "Прочее")
@@ -155,15 +156,13 @@ def guess_category(merchant: str, amount: float) -> tuple:
 
 # === ПАРСИНГ PDF ===
 def parse_pdf_transactions(pdf_base64: str) -> list:
-    import fitz  # PyMuPDF: pip install PyMuPDF
-    import io
+    import fitz, io, base64
     try:
         pdf_bytes = base64.b64decode(pdf_base64)
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         all_transactions = []
         
         for i, page in enumerate(doc):
-            # Рендерим страницу в изображение (PNG)
             pix = page.get_pixmap(matrix=fitz.Matrix(150/72, 150/72))
             img_bytes = pix.tobytes("png")
             
@@ -179,7 +178,7 @@ def parse_pdf_transactions(pdf_base64: str) -> list:
 [{{"date": "01.01.2024", "amount": 1500, "currency": "RUB", "merchant": "Пятёрочка", "card": "Тинькофф"}}]
 Если транзакций нет — []."""
             
-            result = ask_qwen(prompt, image_bytes=img_bytes, mime_type="image/png", is_pdf=True)
+            result = ask_openrouter(prompt, image_bytes=img_bytes, mime_type="image/png")
             result = result.strip().replace('```json', '').replace('```', '').strip()
             page_tx = json.loads(result)
             if isinstance(page_tx, list):
@@ -188,7 +187,7 @@ def parse_pdf_transactions(pdf_base64: str) -> list:
         doc.close()
         return all_transactions
     except Exception as e:
-        logging.error(f"Ошибка парсинга PDF через Qwen: {e}")
+        logging.error(f"Ошибка парсинга PDF: {e}")
         return []
 
 # === ПРОВЕРКА ДУБЛИКАТОВ ===
@@ -985,7 +984,7 @@ async def settings(message: types.Message):
         f"⚙️ <b>Настройки</b>\n\n"
         f"👤 Ваш ID: <code>{message.from_user.id}</code>\n"
         f"🗄 Google Sheets: {'✅ Подключён' if sh else '❌ Не подключён'}\n"
-        f"🤖 Qwen API: {'✅ Подключён' if QWEN_API_KEY else '❌ Не настроен'}",
+        f"🤖 OpenRouter API: {'✅ Подключён' if QWEN_API_KEY else '❌ Не настроен'}",
         parse_mode="HTML", reply_markup=main_menu_kb()
     )
 
@@ -1077,7 +1076,7 @@ SMS: {sms_text}
 
 Если это НЕ банковское SMS с транзакцией — верни {{"error": "not_transaction"}}"""
     try:
-        result = ask_qwen(prompt)
+        result = ask_openrouter(prompt)
         result = result.strip().replace('```json', '').replace('```', '').strip()
         data = json.loads(result)
         if data.get('error') == 'not_transaction':
@@ -1103,12 +1102,12 @@ def parse_screenshot_transactions(image_bytes: bytes, mime_type: str = "image/jp
 Игнорируй: баланс, заголовки, рекламу."""
     
     try:
-        result = ask_qwen(prompt, image_bytes=image_bytes, mime_type=mime_type)
+        result = ask_openrouter(prompt, image_bytes=image_bytes, mime_type=mime_type)
         result = result.strip().replace('```json', '').replace('```', '').strip()
         transactions = json.loads(result)
         return transactions if isinstance(transactions, list) else []
     except Exception as e:
-        logging.error(f"Ошибка парсинга скриншота через Qwen: {e}")
+        logging.error(f"Ошибка парсинга скриншота: {e}")
         return []
         
 # === ОБРАБОТКА ФОТО (СКРИНШОТ БАНКА) ===
