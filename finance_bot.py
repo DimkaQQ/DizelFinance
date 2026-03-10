@@ -74,22 +74,14 @@ def get_cbr_rate(currency: str) -> float:
 def extract_json(text: str):
     """Надёжно извлекает JSON из ответа Gemini, убирая markdown и лишний текст"""
     text = text.strip()
+    # Убираем markdown блоки ```json ... ``` или ``` ... ```
     text = re.sub(r'```json\s*', '', text)
     text = re.sub(r'```\s*', '', text)
     text = text.strip()
-    
-    # Ищем JSON массив — берём от первой [ до последней ]
-    if '[' in text:
-        start = text.index('[')
-        end   = text.rindex(']') + 1
-        return json.loads(text[start:end])
-    
-    # Ищем JSON объект — берём от первой { до последней }
-    if '{' in text:
-        start = text.index('{')
-        end   = text.rindex('}') + 1
-        return json.loads(text[start:end])
-    
+    # Ищем JSON массив [...] или объект {...}
+    match = re.search(r'(\[.*\]|\{.*\})', text, re.DOTALL)
+    if match:
+        return json.loads(match.group(1))
     return json.loads(text)
 
 # ============================================================
@@ -136,7 +128,15 @@ def ask_gemini(prompt: str, image_bytes: bytes = None, mime_type: str = "image/j
             resp = requests.post(url, json=payload, timeout=60)
             if resp.status_code == 200:
                 data = resp.json()
-                text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                # Gemini 2.5 может вернуть несколько parts (thinking + text)
+                # берём последний text-part
+                parts_list = data["candidates"][0]["content"]["parts"]
+                text = ""
+                for part in parts_list:
+                    if "text" in part:
+                        text = part["text"].strip()
+                # text теперь последний текстовый блок
+                logging.info(f"Gemini raw response (first 300): {text[:300]}")
                 if cache_file:
                     with open(cache_file, "w", encoding="utf-8") as f:
                         json.dump(text, f, ensure_ascii=False)
