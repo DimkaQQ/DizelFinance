@@ -74,14 +74,22 @@ def get_cbr_rate(currency: str) -> float:
 def extract_json(text: str):
     """Надёжно извлекает JSON из ответа Gemini, убирая markdown и лишний текст"""
     text = text.strip()
-    # Убираем markdown блоки ```json ... ``` или ``` ... ```
     text = re.sub(r'```json\s*', '', text)
     text = re.sub(r'```\s*', '', text)
     text = text.strip()
-    # Ищем JSON массив [...] или объект {...}
-    match = re.search(r'(\[.*\]|\{.*\})', text, re.DOTALL)
-    if match:
-        return json.loads(match.group(1))
+    
+    # Ищем JSON массив — берём от первой [ до последней ]
+    if '[' in text:
+        start = text.index('[')
+        end   = text.rindex(']') + 1
+        return json.loads(text[start:end])
+    
+    # Ищем JSON объект — берём от первой { до последней }
+    if '{' in text:
+        start = text.index('{')
+        end   = text.rindex('}') + 1
+        return json.loads(text[start:end])
+    
     return json.loads(text)
 
 # ============================================================
