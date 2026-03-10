@@ -65,35 +65,35 @@ def get_cbr_rate(currency: str) -> float:
 def ask_qwen(prompt: str, image_bytes: bytes = None, mime_type: str = "image/jpeg", is_pdf: bool = False) -> str:
     import hashlib, os, base64, time
     
-    # Кэширование для текстовых запросов
-    cache_key = hashlib.md5((prompt + (image_bytes[:100] if image_bytes else b"")).encode()).hexdigest()
-    cache_file = f"/tmp/qwen_cache_{cache_key}.json"
+    # === Кэширование ТОЛЬКО для текстовых запросов ===
+    if not image_bytes:
+        cache_key = hashlib.md5(prompt.encode()).hexdigest()
+        cache_file = f"/tmp/qwen_cache_{cache_key}.json"
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, encoding="utf-8") as f:
+                    result = json.load(f)
+                    logging.info("Qwen cache HIT")
+                    return result
+            except:
+                pass
+    else:
+        # Для изображений — кэш не используем (или можно по hash изображения)
+        cache_file = None
     
-    if not image_bytes and os.path.exists(cache_file):
-        try:
-            with open(cache_file, encoding="utf-8") as f:
-                result = json.load(f)
-                logging.info("Qwen cache HIT")
-                return result
-        except:
-            pass
-    
-    # Подготовка сообщений
+    # === Подготовка сообщений ===
     messages = [{"role": "user", "content": []}]
     
     if image_bytes:
-        # Для Qwen-VL: изображение в base64 или URL
         image_b64 = base64.b64encode(image_bytes).decode('utf-8')
-        # Вариант 1: через data URL (поддерживается qwen-vl-max)
         image_url = f"data:{mime_type};base64,{image_b64}"
         messages[0]["content"].append({"image": image_url})
     
     messages[0]["content"].append({"text": prompt})
     
-    # Выбор модели
+    # === Выбор модели и запрос ===
     model = VISION_MODEL if image_bytes else TEXT_MODEL
     
-    # Retry-логика (у Qwen бывают таймауты)
     for attempt in range(3):
         try:
             response = MultiModalConversation.call(model=model, messages=messages)
@@ -108,20 +108,21 @@ def ask_qwen(prompt: str, image_bytes: bytes = None, mime_type: str = "image/jpe
                         text = str(content)
                 else:
                     text = str(response.output)
+                
                 # Кэшируем только текстовые ответы
-                if not image_bytes:
+                if cache_file and not image_bytes:
                     with open(cache_file, 'w', encoding='utf-8') as f:
                         json.dump(text, f, ensure_ascii=False)
                 return text.strip()
             else:
                 logging.warning(f"Qwen API error: {response.code} - {response.message}")
-                time.sleep(2 ** attempt)  # экспоненциальная задержка
+                time.sleep(2 ** attempt)
         except Exception as e:
             logging.error(f"Qwen API exception (attempt {attempt+1}): {e}")
             time.sleep(2 ** attempt)
     
     raise ValueError("Не удалось получить ответ от Qwen API после 3 попыток")
-
+    
 # === УГАДАТЬ КАТЕГОРИЮ ===
 def guess_category(merchant: str, amount: float) -> tuple:
     subcategories_str = json.dumps(CATEGORIES, ensure_ascii=False)
@@ -189,7 +190,7 @@ def parse_pdf_transactions(pdf_base64: str) -> list:
     except Exception as e:
         logging.error(f"Ошибка парсинга PDF через Qwen: {e}")
         return []
-        
+
 # === ПРОВЕРКА ДУБЛИКАТОВ ===
 def get_existing_transactions() -> set:
     try:
