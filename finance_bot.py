@@ -1022,6 +1022,162 @@ SMS: {sms_text}
         logging.error(f"Ошибка парсинга SMS: {e}")
         return None
 
+# === ПАРСИНГ СКРИНШОТА ===
+def parse_screenshot_transactions(image_base64: str, mime_type: str = "image/jpeg") -> list:
+    """Парсит скриншот банковского приложения через Gemini Vision"""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+    prompt = """Это скриншот банковского приложения или выписки. Извлеки ВСЕ транзакции которые видишь.
+
+Для каждой транзакции верни:
+- date: дата в формате ДД.ММ.ГГГГ (если только месяц/день — добавь текущий год)
+- amount: сумма числом (положительное)
+- currency: валюта (RUB/USD/EUR/KZT/IDR/VND) — определи по символу ₽/$//₸/Rp/₫
+- merchant: название места, магазина или описание операции
+- card: название карты или последние 4 цифры если видно, иначе пустая строка
+- tx_type: "Расход" если списание/покупка/оплата, "Доход" если зачисление/пополнение
+
+Ответь ТОЛЬКО в формате JSON массива без markdown:
+[{"date": "ДД.ММ.ГГГГ", "amount": 0.0, "currency": "RUB", "merchant": "...", "card": "", "tx_type": "Расход"}]
+
+Если транзакций нет — верни []
+Игнорируй: заголовки, балансы счёта, рекламные блоки."""
+
+    parts = [
+        {"inline_data": {"mime_type": mime_type, "data": image_base64}},
+        {"text": prompt}
+    ]
+    body = {"contents": [{"parts": parts}], "generationConfig": {"temperature": 0.1}}
+    try:
+        response = requests.post(url, json=body, timeout=60)
+        data = response.json()
+        if "candidates" not in data:
+            logging.error(f"Gemini Vision error: {json.dumps(data, ensure_ascii=False)[:300]}")
+            raise ValueError(data.get('error', {}).get('message', 'Unknown error'))
+        raw = data["candidates"][0]["content"]["parts"][0]["text"]
+        raw = raw.strip().replace('```json', '').replace('```', '').strip()
+        result = json.loads(raw)
+        return result if isinstance(result, list) else []
+    except Exception as e:
+        logging.error(f"Ошибка парсинга скриншота: {e}")
+        return []
+
+# === ОБРАБОТКА ФОТО (СКРИНШОТ БАНКА) ===
+@dp.message_handler(content_types=types.ContentType.PHOTO, state="*")
+async def handle_screenshot(message: types.Message, state: FSMContext):
+    if ALLOWED_IDS and message.from_user.id not in ALLOWED_IDS:
+        return
+
+    await message.answer("📸 Анализирую скриншот...")
+    try:
+        # Берём фото наибольшего размера
+        photo = message.photo[-1]
+        file = await bot.get_file(photo.file_id)
+        file_bytes = await bot.download_file(file.file_path)
+        image_base64 = base64.b64encode(file_bytes.read()).decode('utf-8')
+
+        transactions = parse_screenshot_transactions(image_base64)
+
+        if not transactions:
+            await message.answer(
+                "❌ Не удалось найти транзакции на скриншоте.\n\nПопробуйте:\n— Скриншот списка операций (не главного экрана)\n— Более чёткое фото\n— PDF выписку",
+                reply_markup=main_menu_kb()
+            )
+            return
+
+        # Если одна транзакция — сразу в FSM
+        if len(transactions) == 1:
+            tx = transactions[0]
+            amount = float(tx.get('amount', 0))
+            currency = tx.get('currency', 'RUB')
+            merchant = tx.get('merchant', '')
+            card = tx.get('card', '')
+            tx_type_w = tx.get('tx_type', 'Расход')
+            date_raw = tx.get('date', '')
+            # Validate date
+            date = date_raw if date_raw else datetime.now().strftime('%d.%m.%Y, %H:%M')
+            rate = get_cbr_rate(currency)
+            amount_rub = round(amount * rate, 2)
+            symbol = CURRENCY_SYMBOLS.get(currency, currency)
+            tx_icon = "💰" if tx_type_w == 'Доход' else "💸"
+
+            tx_id = str(uuid.uuid4())[:8]
+            pending_transactions[tx_id] = {
+                "a": amount, "m": merchant, "c": card, "d": date,
+                "cur": currency, "rate": rate, "a_rub": amount_rub,
+                "tx_type": tx_type_w,
+            }
+            user_id = message.from_user.id
+            if user_id not in saved_drafts:
+                saved_drafts[user_id] = []
+            saved_drafts[user_id].append({
+                "id": str(uuid.uuid4())[:8], "a": amount, "m": merchant, "c": card, "d": date,
+                "cur": currency, "rate": rate, "a_rub": amount_rub, "tx_type": tx_type_w,
+            })
+
+            kb = types.InlineKeyboardMarkup(row_width=3)
+            quick_cats = ["Жизнь", "Транспорт", "Дом", "Здоровье", "Развлечения", "Прочее"]
+            for cat in quick_cats:
+                kb.add(types.InlineKeyboardButton(cat, callback_data=f"wbq|{tx_id}|{cat}"))
+            kb.add(
+                types.InlineKeyboardButton("📋 Все категории", callback_data=f"wb|{tx_id}"),
+                types.InlineKeyboardButton("❌ Пропустить", callback_data="wb|no")
+            )
+            preview = (
+                f"📸 <b>Скриншот распознан:</b>\n\n"
+                f"{tx_icon} {tx_type_w}\n"
+                f"💵 {amount:,.2f} {symbol}\n"
+                f"🏪 {merchant}\n"
+                f"💳 {card}\n"
+                f"📅 {date}\n\n"
+                f"Выберите категорию:"
+            )
+            await message.answer(preview, parse_mode="HTML", reply_markup=kb)
+            return
+
+        # Если несколько транзакций — показываем как PDF сессию
+        existing = get_existing_transactions()
+        enriched = []
+        for tx in transactions:
+            date_part = str(tx.get('date', '')).split(',')[0].strip()
+            amount_str = str(tx.get('amount', ''))
+            merchant = str(tx.get('merchant', '')).strip().lower()
+            is_duplicate = f"{date_part}|{amount_str}|{merchant}" in existing
+            currency = tx.get('currency', 'RUB')
+            rate = get_cbr_rate(currency)
+            amount_rub = round(float(tx.get('amount', 0)) * rate, 2)
+            enriched.append({
+                **tx,
+                'category': 'Прочее',
+                'subcategory': '',
+                'rate': rate,
+                'amount_rub': amount_rub,
+                'is_duplicate': is_duplicate
+            })
+
+        user_id = message.from_user.id
+        pdf_sessions[user_id] = {
+            'transactions': enriched,
+            'current_idx': 0,
+            'saved_count': 0,
+            'skipped_count': 0
+        }
+
+        duplicate_count = sum(1 for t in enriched if t['is_duplicate'])
+        new_count = len(enriched) - duplicate_count
+
+        await message.answer(
+            f"✅ <b>Скриншот распознан!</b>\n\n"
+            f"📄 Транзакций: {len(enriched)}\n"
+            f"🆕 Новых: {new_count}\n"
+            f"⚠️ Возможных дубликатов: {duplicate_count}\n\n"
+            "Что делаем?",
+            parse_mode="HTML", reply_markup=pdf_action_kb()
+        )
+
+    except Exception as e:
+        logging.error(f"Ошибка обработки скриншота: {e}")
+        await message.answer(f"❌ Ошибка: {e}", reply_markup=main_menu_kb())
+
 # === WEBHOOK ===
 app = Flask(__name__)
 
