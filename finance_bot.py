@@ -29,7 +29,7 @@ SHEET_URL = os.getenv("SHEET_URL")
 ADMIN_ID = os.getenv("ADMIN_TELEGRAM_ID")
 ALLOWED_IDS = set(int(x.strip()) for x in os.getenv("ALLOWED_USER_IDS", "").split(",") if x.strip())
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = "gemini-2.5-flash-preview-04-17"  # ← МЕНЯЙ МОДЕЛЬ ЗДЕСЬ
+GEMINI_MODEL = "gemini-2.0-flash"  # ← МЕНЯЙ МОДЕЛЬ ЗДЕСЬ
 
 logging.basicConfig(level=logging.INFO)
 
@@ -62,6 +62,18 @@ def _get_gemini_model():
     return genai.GenerativeModel(GEMINI_MODEL)
 
 def ask_gemini(prompt: str, pdf_base64: str = None) -> str:
+    import hashlib, os
+    cache_key = hashlib.md5((prompt + (pdf_base64 or "")[:100]).encode()).hexdigest()
+    cache_file = f"/tmp/gemini_cache_{cache_key}.json"
+    if not pdf_base64 and os.path.exists(cache_file):
+        try:
+            with open(cache_file) as f:
+                result = json.load(f)
+            logging.info("Gemini text cache HIT")
+            return result
+        except Exception:
+            pass
+
     model = _get_gemini_model()
     parts = []
     if pdf_base64:
@@ -69,11 +81,21 @@ def ask_gemini(prompt: str, pdf_base64: str = None) -> str:
     parts.append(prompt)
     response = model.generate_content(parts, generation_config={"temperature": 0.1})
     if hasattr(response, "text") and response.text:
-        return response.text
-    try:
-        return response.candidates[0].content.parts[0].text
-    except Exception as e:
-        raise ValueError(f"Gemini API error: {e}")
+        text = response.text
+    else:
+        try:
+            text = response.candidates[0].content.parts[0].text
+        except Exception as e:
+            raise ValueError(f"Gemini API error: {e}")
+
+    # Cache text-only responses (not PDF)
+    if not pdf_base64:
+        try:
+            with open(cache_file, 'w') as f:
+                json.dump(text, f, ensure_ascii=False)
+        except Exception:
+            pass
+    return text
 
 # === УГАДАТЬ КАТЕГОРИЮ ===
 def guess_category(merchant: str, amount: float) -> tuple:
@@ -1046,6 +1068,26 @@ def parse_screenshot_transactions(image_bytes: bytes, mime_type: str = "image/jp
 Если транзакций нет — верни []
 Игнорируй: заголовки, балансы счёта, рекламные блоки."""
     try:
+        import hashlib
+        cache_key = "screenshot:" + hashlib.md5(image_bytes).hexdigest()
+        cached = None
+        try:
+            from cachetools import TTLCache
+        except ImportError:
+            pass
+
+        # Simple file-based cache check
+        cache_file = f"/tmp/gemini_cache_{hashlib.md5(image_bytes).hexdigest()}.json"
+        import os
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file) as f:
+                    cached_data = json.load(f)
+                logging.info("Screenshot cache HIT")
+                return cached_data
+            except Exception:
+                pass
+
         model = _get_gemini_model()
         image_part = {"mime_type": mime_type, "data": image_bytes}
         response = model.generate_content([image_part, prompt], generation_config={"temperature": 0.1})
@@ -1055,7 +1097,16 @@ def parse_screenshot_transactions(image_bytes: bytes, mime_type: str = "image/jp
             raw = response.candidates[0].content.parts[0].text
         raw = raw.strip().replace('```json', '').replace('```', '').strip()
         result = json.loads(raw)
-        return result if isinstance(result, list) else []
+        transactions = result if isinstance(result, list) else []
+
+        # Save to cache
+        try:
+            with open(cache_file, 'w') as f:
+                json.dump(transactions, f, ensure_ascii=False)
+        except Exception:
+            pass
+
+        return transactions
     except Exception as e:
         logging.error(f"Ошибка парсинга скриншота: {e}")
         return []
