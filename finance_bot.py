@@ -28,6 +28,7 @@ SHEET_URL = os.getenv("SHEET_URL")
 ADMIN_ID = os.getenv("ADMIN_TELEGRAM_ID")
 ALLOWED_IDS = set(int(x.strip()) for x in os.getenv("ALLOWED_USER_IDS", "").split(",") if x.strip())
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_MODEL = "gemini-2.0-flash"  # ← МЕНЯЙ МОДЕЛЬ ЗДЕСЬ
 
 logging.basicConfig(level=logging.INFO)
 
@@ -56,7 +57,7 @@ def get_cbr_rate(currency: str) -> float:
 
 # === GEMINI API ===
 def ask_gemini(prompt: str, pdf_base64: str = None) -> str:
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
     parts = []
     if pdf_base64:
         parts.append({"inline_data": {"mime_type": "application/pdf", "data": pdf_base64}})
