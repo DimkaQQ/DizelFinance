@@ -64,6 +64,9 @@ def ask_gemini(prompt: str, pdf_base64: str = None) -> str:
     body = {"contents": [{"parts": parts}], "generationConfig": {"temperature": 0.1}}
     response = requests.post(url, json=body, timeout=60)
     data = response.json()
+    if "candidates" not in data:
+        logging.error(f"Gemini error response: {json.dumps(data, ensure_ascii=False)[:500]}")
+        raise ValueError(f"Gemini API error: {data.get('error', {}).get('message', str(data))}")
     return data["candidates"][0]["content"]["parts"][0]["text"]
 
 # === УГАДАТЬ КАТЕГОРИЮ ===
@@ -989,6 +992,35 @@ async def unknown_message(message: types.Message, state: FSMContext):
     if await state.get_state() is None:
         await message.answer("Не понимаю. Используйте меню 👇", reply_markup=main_menu_kb())
 
+# === ПАРСИНГ SMS ===
+def parse_sms_transaction(sms_text: str) -> dict | None:
+    """Парсит SMS от банка и извлекает данные транзакции"""
+    prompt = f"""Извлеки данные транзакции из банковского SMS.
+
+SMS: {sms_text}
+
+Ответь ТОЛЬКО в формате JSON без markdown:
+{{"amount": 0.0, "currency": "RUB", "merchant": "название места или описание", "card": "название карты или последние 4 цифры", "tx_type": "Расход или Доход", "date": "ДД.ММ.ГГГГ или пустая строка"}}
+
+Правила:
+- tx_type = "Доход" если это пополнение/зачисление/перевод ПОЛУЧЕН
+- tx_type = "Расход" если это списание/покупка/оплата
+- amount всегда положительное число
+- если дата не указана — пустая строка
+- если карта не определена — пустая строка
+
+Если это НЕ банковское SMS с транзакцией — верни {{"error": "not_transaction"}}"""
+    try:
+        result = ask_gemini(prompt)
+        result = result.strip().replace('```json', '').replace('```', '').strip()
+        data = json.loads(result)
+        if data.get('error') == 'not_transaction':
+            return None
+        return data
+    except Exception as e:
+        logging.error(f"Ошибка парсинга SMS: {e}")
+        return None
+
 # === WEBHOOK ===
 app = Flask(__name__)
 
@@ -1055,6 +1087,151 @@ def webhook_transaction():
         logging.error(f"Ошибка webhook: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
+
+# === WEBHOOK SMS ===
+@app.route('/webhook/sms', methods=['POST'])
+def webhook_sms():
+    try:
+        data = request.json
+        logging.info(f"SMS WEBHOOK: {data}")
+        user_id = data.get('user_id')
+        sms_text = data.get('sms', '').strip()
+
+        if not user_id or not sms_text:
+            return jsonify({"status": "error", "message": "Missing user_id or sms"}), 400
+        if ALLOWED_IDS and int(user_id) not in ALLOWED_IDS:
+            return jsonify({"status": "error", "message": "Unauthorized"}), 403
+
+        tx = parse_sms_transaction(sms_text)
+        if not tx:
+            return jsonify({"status": "skip", "message": "Not a transaction SMS"}), 200
+
+        amount = float(tx.get('amount', 0))
+        currency = tx.get('currency', 'RUB')
+        merchant = tx.get('merchant', 'SMS')
+        card = tx.get('card', '')
+        tx_type_w = tx.get('tx_type', 'Расход')
+        date = tx.get('date') or datetime.now().strftime('%d.%m.%Y, %H:%M')
+
+        rate = get_cbr_rate(currency)
+        amount_rub = round(amount * rate, 2)
+        symbol = CURRENCY_SYMBOLS.get(currency, currency)
+        tx_icon = "💰" if tx_type_w == 'Доход' else "💸"
+
+        message_text = (
+            f"📱 <b>SMS транзакция:</b>
+
+"
+            f"{tx_icon} {tx_type_w}
+"
+            f"💵 {amount:,.2f} {symbol}
+"
+        )
+        if currency != 'RUB':
+            message_text += f"🔄 В рублях: {amount_rub:,.2f} ₽
+"
+        message_text += f"🏪 {merchant}
+💳 {card}
+📅 {date}
+
+Записать?"
+
+        tx_id = str(uuid.uuid4())[:8]
+        pending_transactions[tx_id] = {
+            "a": amount, "m": merchant, "c": card, "d": date,
+            "cur": currency, "rate": rate, "a_rub": amount_rub,
+            "tx_type": tx_type_w,
+        }
+        draft_id = str(uuid.uuid4())[:8]
+        if int(user_id) not in saved_drafts:
+            saved_drafts[int(user_id)] = []
+        saved_drafts[int(user_id)].append({
+            "id": draft_id, "a": amount, "m": merchant, "c": card, "d": date,
+            "cur": currency, "rate": rate, "a_rub": amount_rub,
+            "tx_type": tx_type_w,
+        })
+
+        kb = types.InlineKeyboardMarkup(row_width=3)
+        quick_cats = ["Жизнь", "Транспорт", "Дом", "Здоровье", "Развлечения", "Прочее"]
+        for cat in quick_cats:
+            kb.add(types.InlineKeyboardButton(cat, callback_data=f"wbq|{tx_id}|{cat}"))
+        kb.add(
+            types.InlineKeyboardButton("📋 Все категории", callback_data=f"wb|{tx_id}"),
+            types.InlineKeyboardButton("❌ Пропустить", callback_data="wb|no")
+        )
+
+        import requests as req
+        req.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json={
+            "chat_id": user_id, "text": message_text, "parse_mode": "HTML",
+            "reply_markup": kb.to_python()
+        })
+        return jsonify({"status": "ok"}), 200
+
+    except Exception as e:
+        logging.error(f"Ошибка SMS webhook: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+# === ОБРАБОТКА SMS ТЕКСТОМ В БОТЕ ===
+@dp.message_handler(lambda m: m.text and len(m.text) > 20 and any(w in m.text.lower() for w in ['списано', 'зачислено', 'покупка', 'оплата', 'перевод', 'баланс', 'карта']), state=TransactionForm.waiting_for_action)
+async def handle_sms_text(message: types.Message, state: FSMContext):
+    """Обрабатывает SMS вставленный текстом в бот"""
+    if ALLOWED_IDS and message.from_user.id not in ALLOWED_IDS:
+        return
+    await message.answer("📱 Похоже на банковское SMS, разбираю...")
+    tx = parse_sms_transaction(message.text)
+    if not tx:
+        await message.answer("❌ Не смог распознать транзакцию. Попробуйте ➕ Новая транзакция.")
+        return
+
+    amount = float(tx.get('amount', 0))
+    currency = tx.get('currency', 'RUB')
+    merchant = tx.get('merchant', 'SMS')
+    card = tx.get('card', '')
+    tx_type_w = tx.get('tx_type', 'Расход')
+    date = tx.get('date') or datetime.now().strftime('%d.%m.%Y, %H:%M')
+
+    rate = get_cbr_rate(currency)
+    amount_rub = round(amount * rate, 2)
+    symbol = CURRENCY_SYMBOLS.get(currency, currency)
+    tx_icon = "💰" if tx_type_w == 'Доход' else "💸"
+
+    tx_id = str(uuid.uuid4())[:8]
+    pending_transactions[tx_id] = {
+        "a": amount, "m": merchant, "c": card, "d": date,
+        "cur": currency, "rate": rate, "a_rub": amount_rub,
+        "tx_type": tx_type_w,
+    }
+    user_id = message.from_user.id
+    if user_id not in saved_drafts:
+        saved_drafts[user_id] = []
+    saved_drafts[user_id].append({
+        "id": str(uuid.uuid4())[:8], "a": amount, "m": merchant, "c": card, "d": date,
+        "cur": currency, "rate": rate, "a_rub": amount_rub, "tx_type": tx_type_w,
+    })
+
+    kb = types.InlineKeyboardMarkup(row_width=3)
+    quick_cats = ["Жизнь", "Транспорт", "Дом", "Здоровье", "Развлечения", "Прочее"]
+    for cat in quick_cats:
+        kb.add(types.InlineKeyboardButton(cat, callback_data=f"wbq|{tx_id}|{cat}"))
+    kb.add(
+        types.InlineKeyboardButton("📋 Все категории", callback_data=f"wb|{tx_id}"),
+        types.InlineKeyboardButton("❌ Пропустить", callback_data="wb|no")
+    )
+
+    preview = f"📱 <b>SMS распознано:</b>
+
+{tx_icon} {tx_type_w}
+💵 {amount:,.2f} {symbol}"
+    if currency != 'RUB':
+        preview += f"
+🔄 {amount_rub:,.2f} ₽"
+    preview += f"
+🏪 {merchant}
+💳 {card}
+📅 {date}
+
+Выберите категорию:"
+    await message.answer(preview, parse_mode="HTML", reply_markup=kb)
 
 # === WEBHOOK БЫСТРЫЕ КАТЕГОРИИ ===
 @dp.callback_query_handler(lambda c: c.data.startswith("wbq|"), state="*")
