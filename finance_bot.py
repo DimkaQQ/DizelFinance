@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
+import re
 import logging
 import base64
 import json
@@ -68,6 +69,22 @@ def get_cbr_rate(currency: str) -> float:
     return 1.0
 
 # ============================================================
+# Надёжный парсинг JSON из ответа Gemini
+# ============================================================
+def extract_json(text: str):
+    """Надёжно извлекает JSON из ответа Gemini, убирая markdown и лишний текст"""
+    text = text.strip()
+    # Убираем markdown блоки ```json ... ``` или ``` ... ```
+    text = re.sub(r'```json\s*', '', text)
+    text = re.sub(r'```\s*', '', text)
+    text = text.strip()
+    # Ищем JSON массив [...] или объект {...}
+    match = re.search(r'(\[.*\]|\{.*\})', text, re.DOTALL)
+    if match:
+        return json.loads(match.group(1))
+    return json.loads(text)
+
+# ============================================================
 # Gemini API через Cloudflare Worker
 # ============================================================
 def ask_gemini(prompt: str, image_bytes: bytes = None, mime_type: str = "image/jpeg") -> str:
@@ -85,7 +102,6 @@ def ask_gemini(prompt: str, image_bytes: bytes = None, mime_type: str = "image/j
         except Exception:
             pass
 
-    # Собираем parts запроса
     parts = []
     if image_bytes:
         parts.append({
@@ -144,10 +160,9 @@ def guess_category(merchant: str, amount: float) -> tuple:
 
 Выбирай ТОЛЬКО из предложенных категорий и подкатегорий."""
     try:
-        result = ask_gemini(prompt)
-        result = result.strip().replace("```json", "").replace("```", "").strip()
-        data   = json.loads(result)
-        category   = data.get("category", "Прочее")
+        result   = ask_gemini(prompt)
+        data     = extract_json(result)
+        category    = data.get("category", "Прочее")
         subcategory = data.get("subcategory", "")
         if category not in CATEGORIES:
             category = "Прочее"
@@ -162,14 +177,14 @@ def guess_category(merchant: str, amount: float) -> tuple:
 # Парсинг PDF
 # ============================================================
 def parse_pdf_transactions(pdf_base64: str) -> list:
-    import fitz, io
+    import fitz
     try:
         pdf_bytes = base64.b64decode(pdf_base64)
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         all_transactions = []
 
         for i, page in enumerate(doc):
-            pix      = page.get_pixmap(matrix=fitz.Matrix(150 / 72, 150 / 72))
+            pix       = page.get_pixmap(matrix=fitz.Matrix(150 / 72, 150 / 72))
             img_bytes = pix.tobytes("png")
 
             prompt = f"""Страница {i + 1} банковской выписки.
@@ -184,9 +199,8 @@ def parse_pdf_transactions(pdf_base64: str) -> list:
 [{{"date": "01.01.2024", "amount": 1500, "currency": "RUB", "merchant": "Пятёрочка", "card": "Тинькофф"}}]
 Если транзакций нет — []."""
 
-            result   = ask_gemini(prompt, image_bytes=img_bytes, mime_type="image/png")
-            result   = result.strip().replace("```json", "").replace("```", "").strip()
-            page_tx  = json.loads(result)
+            result  = ask_gemini(prompt, image_bytes=img_bytes, mime_type="image/png")
+            page_tx = extract_json(result)
             if isinstance(page_tx, list):
                 all_transactions.extend(page_tx)
 
@@ -213,9 +227,8 @@ def parse_screenshot_transactions(image_bytes: bytes, mime_type: str = "image/jp
 Если нет транзакций — [].
 Игнорируй: баланс, заголовки, рекламу."""
     try:
-        result = ask_gemini(prompt, image_bytes=image_bytes, mime_type=mime_type)
-        result = result.strip().replace("```json", "").replace("```", "").strip()
-        transactions = json.loads(result)
+        result       = ask_gemini(prompt, image_bytes=image_bytes, mime_type=mime_type)
+        transactions = extract_json(result)
         return transactions if isinstance(transactions, list) else []
     except Exception as e:
         logging.error(f"Ошибка парсинга скриншота: {e}")
@@ -242,8 +255,7 @@ SMS: {sms_text}
 Если это НЕ банковское SMS с транзакцией — верни {{"error": "not_transaction"}}"""
     try:
         result = ask_gemini(prompt)
-        result = result.strip().replace("```json", "").replace("```", "").strip()
-        data   = json.loads(result)
+        data   = extract_json(result)
         if data.get("error") == "not_transaction":
             return None
         return data
@@ -453,10 +465,10 @@ def build_preview(data: dict) -> str:
     return preview
 
 def build_pdf_tx_preview(tx: dict, idx: int, total: int) -> str:
-    currency   = tx.get("currency", "RUB")
-    amount     = tx.get("amount", 0)
-    symbol     = CURRENCY_SYMBOLS.get(currency, currency)
-    category   = tx.get("category", "Прочее")
+    currency    = tx.get("currency", "RUB")
+    amount      = tx.get("amount", 0)
+    symbol      = CURRENCY_SYMBOLS.get(currency, currency)
+    category    = tx.get("category", "Прочее")
     subcategory = tx.get("subcategory", "")
 
     text = (
@@ -477,12 +489,12 @@ def build_pdf_tx_preview(tx: dict, idx: int, total: int) -> str:
 # Запись в Google Sheets
 # ============================================================
 async def save_transaction_to_sheets(data: dict):
-    ws       = sh.worksheet("Транзакции")
-    currency = data.get("currency", "RUB")
-    amount   = data.get("amount", 0)
-    rate     = data.get("rate", 1.0)
+    ws         = sh.worksheet("Транзакции")
+    currency   = data.get("currency", "RUB")
+    amount     = data.get("amount", 0)
+    rate       = data.get("rate", 1.0)
     amount_rub = data.get("amount_rub", amount)
-    new_row  = [
+    new_row = [
         data.get("date", ""),
         data.get("category", ""),
         data.get("subcategory", ""),
@@ -562,30 +574,30 @@ async def handle_pdf(message: types.Message, state: FSMContext):
 
         enriched = []
         for tx in transactions:
-            date_part  = str(tx.get("date", "")).split(",")[0].strip()
-            amount_str = str(tx.get("amount", ""))
-            merchant   = str(tx.get("merchant", "")).strip().lower()
+            date_part    = str(tx.get("date", "")).split(",")[0].strip()
+            amount_str   = str(tx.get("amount", ""))
+            merchant     = str(tx.get("merchant", "")).strip().lower()
             is_duplicate = f"{date_part}|{amount_str}|{merchant}" in existing
 
             category, subcategory = guess_category(tx.get("merchant", ""), tx.get("amount", 0))
-            currency  = tx.get("currency", "RUB")
-            rate      = get_cbr_rate(currency)
+            currency   = tx.get("currency", "RUB")
+            rate       = get_cbr_rate(currency)
             amount_rub = round(float(tx.get("amount", 0)) * rate, 2)
 
             enriched.append({
                 **tx,
-                "category":    category,
-                "subcategory": subcategory,
-                "rate":        rate,
-                "amount_rub":  amount_rub,
+                "category":     category,
+                "subcategory":  subcategory,
+                "rate":         rate,
+                "amount_rub":   amount_rub,
                 "is_duplicate": is_duplicate,
             })
 
         user_id = message.from_user.id
         pdf_sessions[user_id] = {
-            "transactions": enriched,
-            "current_idx":  0,
-            "saved_count":  0,
+            "transactions":  enriched,
+            "current_idx":   0,
+            "saved_count":   0,
             "skipped_count": 0,
         }
 
@@ -605,7 +617,7 @@ async def handle_pdf(message: types.Message, state: FSMContext):
         await message.answer(f"❌ Ошибка при обработке PDF: {e}")
 
 # ============================================================
-# PDF — действия (Записать все / Просмотреть / Отменить)
+# PDF — действия
 # ============================================================
 @dp.callback_query_handler(lambda c: c.data.startswith("pdf|"), state="*")
 async def pdf_action_handler(callback: types.CallbackQuery, state: FSMContext):
@@ -628,15 +640,15 @@ async def pdf_action_handler(callback: types.CallbackQuery, state: FSMContext):
         for tx in session["transactions"]:
             try:
                 await save_transaction_to_sheets({
-                    "date":       tx.get("date", ""),
-                    "category":   tx.get("category", "Прочее"),
+                    "date":        tx.get("date", ""),
+                    "category":    tx.get("category", "Прочее"),
                     "subcategory": tx.get("subcategory", ""),
-                    "amount":     tx.get("amount", 0),
-                    "currency":   tx.get("currency", "RUB"),
-                    "rate":       tx.get("rate", 1.0),
-                    "amount_rub": tx.get("amount_rub", tx.get("amount", 0)),
-                    "card":       tx.get("card", ""),
-                    "comment":    tx.get("merchant", ""),
+                    "amount":      tx.get("amount", 0),
+                    "currency":    tx.get("currency", "RUB"),
+                    "rate":        tx.get("rate", 1.0),
+                    "amount_rub":  tx.get("amount_rub", tx.get("amount", 0)),
+                    "card":        tx.get("card", ""),
+                    "comment":     tx.get("merchant", ""),
                 })
                 saved += 1
             except Exception as e:
@@ -705,15 +717,15 @@ async def pdf_item_handler(callback: types.CallbackQuery, state: FSMContext):
         tx = transactions[idx]
         try:
             await save_transaction_to_sheets({
-                "date":       tx.get("date", ""),
-                "category":   tx.get("category", "Прочее"),
+                "date":        tx.get("date", ""),
+                "category":    tx.get("category", "Прочее"),
                 "subcategory": tx.get("subcategory", ""),
-                "amount":     tx.get("amount", 0),
-                "currency":   tx.get("currency", "RUB"),
-                "rate":       tx.get("rate", 1.0),
-                "amount_rub": tx.get("amount_rub", tx.get("amount", 0)),
-                "card":       tx.get("card", ""),
-                "comment":    tx.get("merchant", ""),
+                "amount":      tx.get("amount", 0),
+                "currency":    tx.get("currency", "RUB"),
+                "rate":        tx.get("rate", 1.0),
+                "amount_rub":  tx.get("amount_rub", tx.get("amount", 0)),
+                "card":        tx.get("card", ""),
+                "comment":     tx.get("merchant", ""),
             })
             session["saved_count"] = session.get("saved_count", 0) + 1
             await callback.answer("✅ Записано!")
@@ -1071,9 +1083,9 @@ async def statistics(message: types.Message):
             try:
                 dt = datetime.strptime(date_part, "%d.%m.%Y")
                 if dt.strftime("%m.%Y") == current_month:
-                    cat  = rec.get("Категория", "Прочее")
-                    raw  = rec.get("Сумма в Руб", rec.get("Сумма в RUB", rec.get("Сумма", 0)))
-                    amt  = float(str(raw).replace(",", ".").replace(" ", "") or 0)
+                    cat = rec.get("Категория", "Прочее")
+                    raw = rec.get("Сумма в Руб", rec.get("Сумма в RUB", rec.get("Сумма", 0)))
+                    amt = float(str(raw).replace(",", ".").replace(" ", "") or 0)
                     category_totals[cat] = category_totals.get(cat, 0) + amt
             except (ValueError, TypeError):
                 continue
@@ -1176,9 +1188,9 @@ async def handle_screenshot(message: types.Message, state: FSMContext):
         return
     await message.answer("📸 Анализирую скриншот через Gemini AI...")
     try:
-        photo      = message.photo[-1]
-        file       = await bot.get_file(photo.file_id)
-        file_bytes = await bot.download_file(file.file_path)
+        photo       = message.photo[-1]
+        file        = await bot.get_file(photo.file_id)
+        file_bytes  = await bot.download_file(file.file_path)
         image_bytes = file_bytes.read()
 
         transactions = parse_screenshot_transactions(image_bytes)
@@ -1193,11 +1205,11 @@ async def handle_screenshot(message: types.Message, state: FSMContext):
             return
 
         if len(transactions) == 1:
-            tx       = transactions[0]
-            amount   = float(tx.get("amount", 0))
-            currency = tx.get("currency", "RUB")
-            merchant = tx.get("merchant", "")
-            card     = tx.get("card", "")
+            tx        = transactions[0]
+            amount    = float(tx.get("amount", 0))
+            currency  = tx.get("currency", "RUB")
+            merchant  = tx.get("merchant", "")
+            card      = tx.get("card", "")
             tx_type_w = tx.get("tx_type", "Расход")
             date_raw  = tx.get("date", "")
             date      = date_raw if date_raw else datetime.now().strftime("%d.%m.%Y, %H:%M")
@@ -1244,27 +1256,27 @@ async def handle_screenshot(message: types.Message, state: FSMContext):
         existing = get_existing_transactions()
         enriched = []
         for tx in transactions:
-            date_part  = str(tx.get("date", "")).split(",")[0].strip()
-            amount_str = str(tx.get("amount", ""))
-            merchant   = str(tx.get("merchant", "")).strip().lower()
+            date_part    = str(tx.get("date", "")).split(",")[0].strip()
+            amount_str   = str(tx.get("amount", ""))
+            merchant     = str(tx.get("merchant", "")).strip().lower()
             is_duplicate = f"{date_part}|{amount_str}|{merchant}" in existing
-            currency   = tx.get("currency", "RUB")
-            rate       = get_cbr_rate(currency)
-            amount_rub = round(float(tx.get("amount", 0)) * rate, 2)
+            currency     = tx.get("currency", "RUB")
+            rate         = get_cbr_rate(currency)
+            amount_rub   = round(float(tx.get("amount", 0)) * rate, 2)
             enriched.append({
                 **tx,
-                "category":    "Прочее",
-                "subcategory": "",
-                "rate":        rate,
-                "amount_rub":  amount_rub,
+                "category":     "Прочее",
+                "subcategory":  "",
+                "rate":         rate,
+                "amount_rub":   amount_rub,
                 "is_duplicate": is_duplicate,
             })
 
         user_id = message.from_user.id
         pdf_sessions[user_id] = {
-            "transactions": enriched,
-            "current_idx":  0,
-            "saved_count":  0,
+            "transactions":  enriched,
+            "current_idx":   0,
+            "saved_count":   0,
             "skipped_count": 0,
         }
         duplicate_count = sum(1 for t in enriched if t["is_duplicate"])
@@ -1446,8 +1458,8 @@ app = Flask(__name__)
 @app.route("/webhook/transaction", methods=["POST"])
 def webhook_transaction():
     try:
-        data     = request.json
-        user_id  = data.get("user_id")
+        data      = request.json
+        user_id   = data.get("user_id")
         if not user_id or (ALLOWED_IDS and int(user_id) not in ALLOWED_IDS):
             return jsonify({"status": "error", "message": "Unauthorized"}), 403
 
@@ -1467,17 +1479,16 @@ def webhook_transaction():
             message_text += f"🔄 В рублях: {amount_rub:,.2f} ₽\n"
         message_text += f"🏪 Место: {merchant}\n💳 Карта: {card}\n📅 Дата: {date}\n\nЗаписать?"
 
-        tx_id = str(uuid.uuid4())[:8]
+        tx_id   = str(uuid.uuid4())[:8]
+        uid_int = int(user_id)
         pending_transactions[tx_id] = {
             "a": amount, "m": merchant, "c": card, "d": date,
             "cur": currency, "rate": rate, "a_rub": amount_rub, "tx_type": tx_type_w,
         }
-        draft_id = str(uuid.uuid4())[:8]
-        uid_int  = int(user_id)
         if uid_int not in saved_drafts:
             saved_drafts[uid_int] = []
         saved_drafts[uid_int].append({
-            "id": draft_id, "a": amount, "m": merchant, "c": card, "d": date,
+            "id": str(uuid.uuid4())[:8], "a": amount, "m": merchant, "c": card, "d": date,
             "cur": currency, "rate": rate, "a_rub": amount_rub, "tx_type": tx_type_w,
         })
 
@@ -1489,7 +1500,6 @@ def webhook_transaction():
             types.InlineKeyboardButton("📋 Все категории", callback_data=f"wb|{tx_id}"),
             types.InlineKeyboardButton("❌ Пропустить",     callback_data="wb|no")
         )
-
         requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json={
             "chat_id":      user_id,
             "text":         message_text,
@@ -1537,17 +1547,16 @@ def webhook_sms():
             message_text += f"🔄 В рублях: {amount_rub:,.2f} ₽\n"
         message_text += f"🏪 {merchant}\n💳 {card}\n📅 {date}\n\nЗаписать?"
 
-        tx_id    = str(uuid.uuid4())[:8]
-        draft_id = str(uuid.uuid4())[:8]
+        tx_id   = str(uuid.uuid4())[:8]
+        uid_int = int(user_id)
         pending_transactions[tx_id] = {
             "a": amount, "m": merchant, "c": card, "d": date,
             "cur": currency, "rate": rate, "a_rub": amount_rub, "tx_type": tx_type_w,
         }
-        uid_int = int(user_id)
         if uid_int not in saved_drafts:
             saved_drafts[uid_int] = []
         saved_drafts[uid_int].append({
-            "id": draft_id, "a": amount, "m": merchant, "c": card, "d": date,
+            "id": str(uuid.uuid4())[:8], "a": amount, "m": merchant, "c": card, "d": date,
             "cur": currency, "rate": rate, "a_rub": amount_rub, "tx_type": tx_type_w,
         })
 
@@ -1559,7 +1568,6 @@ def webhook_sms():
             types.InlineKeyboardButton("📋 Все категории", callback_data=f"wb|{tx_id}"),
             types.InlineKeyboardButton("❌ Пропустить",     callback_data="wb|no")
         )
-
         requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json={
             "chat_id":      user_id,
             "text":         message_text,
@@ -1591,5 +1599,5 @@ def run_flask():
 if __name__ == "__main__":
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
-    logging.info("🚀 DizelFinance Bot запущен! (Gemini AI via Cloudflare Worker)")
+    logging.info("🚀 DizelFinance Bot запущен! (Gemini 2.5 Flash via Cloudflare Worker)")
     run_bot()
