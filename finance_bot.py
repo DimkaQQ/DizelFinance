@@ -202,7 +202,7 @@ def ask_gemini(prompt: str, image_bytes: bytes = None, mime_type: str = "image/j
         "contents": [{"parts": parts}],
         "generationConfig": {
             "temperature": 0.1,
-            "maxOutputTokens": 2000,
+            "maxOutputTokens": 8000,
         }
     }
 
