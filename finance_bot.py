@@ -209,9 +209,9 @@ def ask_gemini(prompt: str, image_bytes: bytes = None, mime_type: str = "image/j
     model = "gemini-2.5-flash"
     url   = f"{CLOUDFLARE_PROXY}/proxy/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
 
-    for attempt in range(3):
+    for attempt in range(5):
         try:
-            resp = requests.post(url, json=payload, timeout=60)
+            resp = requests.post(url, json=payload, timeout=90)
             if resp.status_code == 200:
                 data = resp.json()
                 # Gemini 2.5 может вернуть несколько parts (thinking + text)
@@ -229,10 +229,10 @@ def ask_gemini(prompt: str, image_bytes: bytes = None, mime_type: str = "image/j
                 return text
             else:
                 logging.warning(f"Gemini error {resp.status_code}: {resp.text[:300]}")
-                time.sleep(2 ** attempt)
+                time.sleep(5 * (attempt + 1))
         except Exception as e:
             logging.error(f"Gemini exception (attempt {attempt + 1}): {e}")
-            time.sleep(2 ** attempt)
+            time.sleep(5 * (attempt + 1))
 
     raise ValueError("Не удалось получить ответ от Gemini после 3 попыток")
 
