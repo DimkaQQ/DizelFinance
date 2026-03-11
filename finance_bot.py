@@ -24,7 +24,7 @@ from flask import Flask, request, jsonify
 # Глобальные хранилища (сессии — в памяти)
 # ============================================================
 pending_transactions = {}
-pdf_sessions = {}
+pdf_sessions = {}          # используется и для скриншотов с несколькими транзакциями
 
 # ============================================================
 # SQLite — постоянное хранилище черновиков
@@ -125,7 +125,6 @@ def get_cbr_rate(currency: str) -> float:
 # Надёжный парсинг JSON из ответа Gemini
 # ============================================================
 def extract_json(text: str):
-    """Надёжно извлекает JSON из ответа Gemini, убирая markdown и лишний текст"""
     text = text.strip()
     text = re.sub(r'```json\s*', '', text)
     text = re.sub(r'```\s*', '', text)
@@ -176,7 +175,6 @@ def extract_json(text: str):
 def ask_gemini(prompt: str, image_bytes: bytes = None, mime_type: str = "image/jpeg") -> str:
     import hashlib, time
 
-    # Кэш только для текстовых запросов (без изображения)
     cache_key  = hashlib.md5(prompt.encode()).hexdigest() if not image_bytes else None
     cache_file = f"/tmp/gemini_cache_{cache_key}.json" if cache_key else None
 
@@ -214,15 +212,12 @@ def ask_gemini(prompt: str, image_bytes: bytes = None, mime_type: str = "image/j
             resp = requests.post(url, json=payload, timeout=90)
             if resp.status_code == 200:
                 data = resp.json()
-                # Gemini 2.5 может вернуть несколько parts (thinking + text)
-                # берём последний text-part
                 parts_list = data["candidates"][0]["content"]["parts"]
                 text = ""
                 for part in parts_list:
                     if "text" in part:
                         text = part["text"].strip()
-                # text теперь последний текстовый блок
-                logging.info(f"Gemini raw response (first 300): {text[:300]}")
+                logging.info(f"Gemini response (first 300): {text[:300]}")
                 if cache_file:
                     with open(cache_file, "w", encoding="utf-8") as f:
                         json.dump(text, f, ensure_ascii=False)
@@ -234,17 +229,43 @@ def ask_gemini(prompt: str, image_bytes: bytes = None, mime_type: str = "image/j
             logging.error(f"Gemini exception (attempt {attempt + 1}): {e}")
             time.sleep(5 * (attempt + 1))
 
-    raise ValueError("Не удалось получить ответ от Gemini после 3 попыток")
+    raise ValueError("Не удалось получить ответ от Gemini после 5 попыток")
 
 # ============================================================
-# Угадать категорию через AI
+# Угадать категорию через AI — с учётом истории из Sheets
 # ============================================================
-def guess_category(merchant: str, amount: float) -> tuple:
+def guess_category(merchant: str, amount: float, hint: str = "") -> tuple:
+    """
+    hint — подсказка из скриншота (например «Еда», «Медицина», «Транспорт»)
+    Возвращает (category, subcategory)
+    """
+    # Берём последние 50 транзакций из Sheets как контекст
+    history_text = ""
+    try:
+        ws = sh.worksheet("Транзакции")
+        records = ws.get_all_records()
+        last = records[-50:] if len(records) > 50 else records
+        lines = []
+        for r in last:
+            m = str(r.get("Место","")).strip()
+            c = str(r.get("Категория","")).strip()
+            s = str(r.get("Подкатегория","")).strip()
+            if m and c:
+                lines.append(f"{m} → {c}" + (f" / {s}" if s else ""))
+        if lines:
+            history_text = "\n".join(lines[-30:])
+    except Exception as e:
+        logging.warning(f"Не удалось загрузить историю: {e}")
+
     subcategories_str = json.dumps(CATEGORIES, ensure_ascii=False)
+    hint_line = f"\nПодсказка с экрана банка: «{hint}»" if hint else ""
+
     prompt = f"""Определи категорию и подкатегорию транзакции.
 
 Место/магазин: {merchant}
-Сумма: {amount}
+Сумма: {amount}{hint_line}
+
+{"История прошлых транзакций (место → категория):" + chr(10) + history_text if history_text else ""}
 
 Доступные категории и подкатегории:
 {subcategories_str}
@@ -252,7 +273,9 @@ def guess_category(merchant: str, amount: float) -> tuple:
 Ответь ТОЛЬКО в формате JSON без markdown:
 {{"category": "название категории", "subcategory": "название подкатегории или пустая строка"}}
 
-Выбирай ТОЛЬКО из предложенных категорий и подкатегорий."""
+Выбирай ТОЛЬКО из предложенных категорий и подкатегорий.
+Если место уже есть в истории — используй ту же категорию."""
+
     try:
         result   = ask_gemini(prompt)
         data     = extract_json(result)
@@ -288,9 +311,10 @@ def parse_pdf_transactions(pdf_base64: str) -> list:
 - currency: RUB/USD/EUR/KZT
 - merchant: название магазина/места
 - card: карта если указана, иначе ""
+- category_hint: категория трат если видна на странице (еда, транспорт, медицина и т.д.), иначе ""
 Игнорируй: пополнения, переводы между счетами, проценты.
 Ответ ТОЛЬКО JSON массивом:
-[{{"date": "01.01.2024", "amount": 1500, "currency": "RUB", "merchant": "Пятёрочка", "card": "Тинькофф"}}]
+[{{"date": "01.01.2024", "amount": 1500, "currency": "RUB", "merchant": "Пятёрочка", "card": "Тинькофф", "category_hint": "еда"}}]
 Если транзакций нет — []."""
 
             result  = ask_gemini(prompt, image_bytes=img_bytes, mime_type="image/png")
@@ -305,7 +329,7 @@ def parse_pdf_transactions(pdf_base64: str) -> list:
         return []
 
 # ============================================================
-# Парсинг скриншота банка
+# Парсинг скриншота банка — улучшенный с category_hint
 # ============================================================
 def parse_screenshot_transactions(image_bytes: bytes, mime_type: str = "image/jpeg") -> list:
     prompt = """Это скриншот банковского приложения. Извлеки ВСЕ транзакции.
@@ -316,16 +340,34 @@ def parse_screenshot_transactions(image_bytes: bytes, mime_type: str = "image/jp
 - merchant: название места или описание
 - card: карта или последние 4 цифры, иначе ""
 - tx_type: "Расход" (списание) или "Доход" (зачисление)
+- category_hint: если на скриншоте РЯДОМ с транзакцией написана категория (Еда, Транспорт, Здоровье, Кафе и т.п.) — напиши её, иначе ""
 Ответ ТОЛЬКО JSON массивом:
-[{"date": "01.01.2024", "amount": 1500, "currency": "RUB", "merchant": "Пятёрочка", "card": "Тинькофф", "tx_type": "Расход"}]
+[{"date": "01.01.2024", "amount": 1500, "currency": "RUB", "merchant": "Пятёрочка", "card": "Тинькофф", "tx_type": "Расход", "category_hint": "Еда"}]
 Если нет транзакций — [].
 Игнорируй: баланс, заголовки, рекламу."""
     try:
-        result       = ask_gemini(prompt, image_bytes=image_bytes, mime_type=mime_type)
+        result = ask_gemini(prompt, image_bytes=image_bytes, mime_type=mime_type)
+        logging.info(f"Screenshot response len={len(result)}, last 100: {result[-100:]}")
         transactions = extract_json(result)
-        return transactions if isinstance(transactions, list) else []
+        if not isinstance(transactions, list):
+            return []
+        logging.info(f"Screenshot parsed OK: {len(transactions)} transactions")
+        return transactions
     except Exception as e:
         logging.error(f"Ошибка парсинга скриншота: {e}")
+        # Попытка восстановить обрезанный JSON
+        try:
+            raw = result if 'result' in dir() else ""
+            if raw:
+                last_brace = raw.rfind("}")
+                if last_brace != -1:
+                    fixed = raw[:last_brace+1] + "]"
+                    transactions = extract_json(fixed)
+                    if isinstance(transactions, list):
+                        logging.info(f"Screenshot recovery OK: {len(transactions)} transactions")
+                        return transactions
+        except Exception:
+            pass
         return []
 
 # ============================================================
@@ -399,9 +441,9 @@ INCOME_CATEGORIES = {
     "Подарки":    [],
 }
 
-CURRENCIES       = ["RUB", "USD", "EUR", "KZT"]
+CURRENCIES       = ["RUB", "USD", "EUR", "KZT", "IDR", "VND"]
 CARDS            = ["Тинькофф", "Альфа", "Сбер", "Freedom"]
-CURRENCY_SYMBOLS = {"RUB": "₽", "USD": "$", "EUR": "€", "KZT": "₸"}
+CURRENCY_SYMBOLS = {"RUB": "₽", "USD": "$", "EUR": "€", "KZT": "₸", "IDR": "Rp", "VND": "₫"}
 
 # ============================================================
 # Инициализация бота
@@ -424,6 +466,9 @@ class TransactionForm(StatesGroup):
     card                = State()
     comment             = State()
     final_confirmation  = State()
+    # Состояния для редактирования транзакции из скриншота/PDF
+    edit_amount         = State()
+    edit_currency       = State()
 
 class PDFForm(StatesGroup):
     reviewing = State()
@@ -457,8 +502,7 @@ def subcategories_kb(category):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     for sub in CATEGORIES.get(category, []):
         kb.add(sub)
-    if not CATEGORIES.get(category):
-        kb.add("Без подкатегории")
+    kb.add("Без подкатегории")
     kb.add("⏪ Назад")
     return kb
 
@@ -466,8 +510,7 @@ def subcategories_kb_income(category):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     for sub in INCOME_CATEGORIES.get(category, []):
         kb.add(sub)
-    if not INCOME_CATEGORIES.get(category):
-        kb.add("Без подкатегории")
+    kb.add("Без подкатегории")
     kb.add("⏪ Назад")
     return kb
 
@@ -499,7 +542,8 @@ def skip_kb():
 def confirmation_kb():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     kb.add("✅ Записать")
-    kb.add("✏️ Изменить")
+    kb.add("✏️ Изменить категорию")
+    kb.add("🔢 Изменить сумму/валюту")
     kb.add("❌ Отменить")
     return kb
 
@@ -513,14 +557,21 @@ def pdf_action_kb():
     return kb
 
 def pdf_item_kb(idx: int, total: int):
-    kb = types.InlineKeyboardMarkup(row_width=3)
+    """
+    Кнопки для просмотра одной транзакции из PDF/скриншота.
+    БАГ ИСПРАВЛЕН: пропустить теперь не записывает, а реально пропускает.
+    """
+    kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
-        types.InlineKeyboardButton("✅ Записать",  callback_data=f"pdfi|save|{idx}"),
-        types.InlineKeyboardButton("✏️ Изменить",  callback_data=f"pdfi|edit|{idx}"),
+        types.InlineKeyboardButton("✅ Записать",   callback_data=f"pdfi|save|{idx}"),
         types.InlineKeyboardButton("⏭ Пропустить", callback_data=f"pdfi|skip|{idx}"),
     )
+    kb.add(
+        types.InlineKeyboardButton("✏️ Категория",  callback_data=f"pdfi|edit_cat|{idx}"),
+        types.InlineKeyboardButton("🔢 Сумма/Вал.", callback_data=f"pdfi|edit_amt|{idx}"),
+    )
     if idx + 1 < total:
-        kb.add(types.InlineKeyboardButton(f"Следующая → ({idx + 2}/{total})", callback_data=f"pdfi|next|{idx}"))
+        kb.add(types.InlineKeyboardButton(f"→ Следующая ({idx + 2}/{total})", callback_data=f"pdfi|next|{idx}"))
     else:
         kb.add(types.InlineKeyboardButton("🏁 Завершить", callback_data="pdfi|done|0"))
     return kb
@@ -548,7 +599,7 @@ def build_preview(data: dict) -> str:
         preview += f"💰 Сумма: <code>{float(amount):,.0f}</code> ₽\n"
     else:
         preview += (
-            f"💰 Сумма: <code>{float(amount):,.0f}</code> {symbol}\n"
+            f"💰 Сумма: <code>{float(amount):,.2f}</code> {symbol}\n"
             f"💱 Курс ЦБ: <code>{float(rate):,.4f}</code> ₽/{symbol}\n"
             f"🔄 В рублях: <code>{float(amount_rub):,.0f}</code> ₽\n"
         )
@@ -564,10 +615,13 @@ def build_pdf_tx_preview(tx: dict, idx: int, total: int) -> str:
     symbol      = CURRENCY_SYMBOLS.get(currency, currency)
     category    = tx.get("category", "Прочее")
     subcategory = tx.get("subcategory", "")
+    tx_type     = tx.get("tx_type", "Расход")
+    tx_icon     = "💰" if tx_type == "Доход" else "💸"
+    hint        = tx.get("category_hint", "")
 
     text = (
         f"<b>#{idx + 1} из {total}</b>\n\n"
-        f"🏪 <b>{tx.get('merchant', '')}</b>\n"
+        f"{tx_icon} <b>{tx.get('merchant', '')}</b>\n"
         f"💰 {float(amount):,.2f} {symbol}\n"
         f"📅 {tx.get('date', '')}\n"
         f"💳 {tx.get('card', '—') or '—'}\n"
@@ -575,6 +629,8 @@ def build_pdf_tx_preview(tx: dict, idx: int, total: int) -> str:
     )
     if subcategory:
         text += f" → {subcategory}"
+    if hint:
+        text += f"\n💡 Подсказка банка: <i>{hint}</i>"
     if tx.get("is_duplicate"):
         text += "\n\n⚠️ <i>Возможно уже записана</i>"
     return text
@@ -664,7 +720,7 @@ async def handle_pdf(message: types.Message, state: FSMContext):
             return
 
         existing = get_existing_transactions()
-        await message.answer(f"📊 Найдено {len(transactions)} транзакций. Определяю категории...")
+        await message.answer(f"📊 Найдено {len(transactions)} транзакций. Определяю категории через AI...")
 
         enriched = []
         for tx in transactions:
@@ -672,19 +728,21 @@ async def handle_pdf(message: types.Message, state: FSMContext):
             amount_str   = str(tx.get("amount", ""))
             merchant     = str(tx.get("merchant", "")).strip().lower()
             is_duplicate = f"{date_part}|{amount_str}|{merchant}" in existing
+            hint         = tx.get("category_hint", "")
 
-            category, subcategory = guess_category(tx.get("merchant", ""), tx.get("amount", 0))
+            category, subcategory = guess_category(tx.get("merchant", ""), tx.get("amount", 0), hint=hint)
             currency   = tx.get("currency", "RUB")
             rate       = get_cbr_rate(currency)
             amount_rub = round(float(tx.get("amount", 0)) * rate, 2)
 
             enriched.append({
                 **tx,
-                "category":     category,
-                "subcategory":  subcategory,
-                "rate":         rate,
-                "amount_rub":   amount_rub,
-                "is_duplicate": is_duplicate,
+                "category":      category,
+                "subcategory":   subcategory,
+                "rate":          rate,
+                "amount_rub":    amount_rub,
+                "is_duplicate":  is_duplicate,
+                "category_hint": hint,
             })
 
         user_id = message.from_user.id
@@ -711,7 +769,7 @@ async def handle_pdf(message: types.Message, state: FSMContext):
         await message.answer(f"❌ Ошибка при обработке PDF: {e}")
 
 # ============================================================
-# PDF — действия
+# PDF — действия (записать все / просмотреть / отменить)
 # ============================================================
 @dp.callback_query_handler(lambda c: c.data.startswith("pdf|"), state="*")
 async def pdf_action_handler(callback: types.CallbackQuery, state: FSMContext):
@@ -720,7 +778,7 @@ async def pdf_action_handler(callback: types.CallbackQuery, state: FSMContext):
     session = pdf_sessions.get(user_id)
 
     if not session:
-        await callback.message.edit_text("❌ Сессия устарела. Загрузите PDF заново.")
+        await callback.message.edit_text("❌ Сессия устарела. Загрузите файл заново.")
         return
 
     if action == "cancel":
@@ -743,6 +801,7 @@ async def pdf_action_handler(callback: types.CallbackQuery, state: FSMContext):
                     "amount_rub":  tx.get("amount_rub", tx.get("amount", 0)),
                     "card":        tx.get("card", ""),
                     "comment":     tx.get("merchant", ""),
+                    "tx_type":     tx.get("tx_type", "Расход"),
                 })
                 saved += 1
             except Exception as e:
@@ -759,11 +818,12 @@ async def pdf_action_handler(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
 
 # ============================================================
-# Показать одну PDF-транзакцию
+# Показать одну транзакцию из PDF/скриншота
 # ============================================================
 async def show_pdf_transaction(message: types.Message, user_id: int, idx: int):
     session = pdf_sessions.get(user_id)
     if not session:
+        await message.answer("❌ Сессия завершена.", reply_markup=main_menu_kb())
         return
     transactions = session["transactions"]
     if idx >= len(transactions):
@@ -780,7 +840,8 @@ async def show_pdf_transaction(message: types.Message, user_id: int, idx: int):
     await message.answer(text, parse_mode="HTML", reply_markup=pdf_item_kb(idx, len(transactions)))
 
 # ============================================================
-# PDF — кнопки по одной
+# PDF/скриншот — кнопки по одной транзакции
+# ИСПРАВЛЕНО: назад не ломает сессию, пропустить не записывает
 # ============================================================
 @dp.callback_query_handler(lambda c: c.data.startswith("pdfi|"), state="*")
 async def pdf_item_handler(callback: types.CallbackQuery, state: FSMContext):
@@ -792,6 +853,7 @@ async def pdf_item_handler(callback: types.CallbackQuery, state: FSMContext):
 
     if not session:
         await callback.message.edit_text("❌ Сессия устарела.")
+        await callback.answer()
         return
 
     transactions = session["transactions"]
@@ -806,8 +868,10 @@ async def pdf_item_handler(callback: types.CallbackQuery, state: FSMContext):
         )
         await callback.message.answer("Выберите действие:", reply_markup=main_menu_kb())
         await state.finish()
+        await TransactionForm.waiting_for_action.set()
 
     elif action == "save":
+        # Записываем транзакцию и переходим к следующей
         tx = transactions[idx]
         try:
             await save_transaction_to_sheets({
@@ -820,25 +884,38 @@ async def pdf_item_handler(callback: types.CallbackQuery, state: FSMContext):
                 "amount_rub":  tx.get("amount_rub", tx.get("amount", 0)),
                 "card":        tx.get("card", ""),
                 "comment":     tx.get("merchant", ""),
+                "tx_type":     tx.get("tx_type", "Расход"),
             })
             session["saved_count"] = session.get("saved_count", 0) + 1
             await callback.answer("✅ Записано!")
         except Exception as e:
             await callback.answer(f"❌ Ошибка: {e}")
-        await callback.message.edit_reply_markup(reply_markup=None)
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
         await show_pdf_transaction(callback.message, user_id, idx + 1)
 
     elif action == "skip":
+        # ИСПРАВЛЕНО: просто пропускаем, ничего не записываем
         session["skipped_count"] = session.get("skipped_count", 0) + 1
         await callback.answer("⏭ Пропущено")
-        await callback.message.edit_reply_markup(reply_markup=None)
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
         await show_pdf_transaction(callback.message, user_id, idx + 1)
 
     elif action == "next":
-        await callback.message.edit_reply_markup(reply_markup=None)
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
         await show_pdf_transaction(callback.message, user_id, idx + 1)
 
-    elif action == "edit":
+    elif action == "edit_cat":
+        # Редактируем категорию — сохраняем контекст и переходим в FSM
+        # ИСПРАВЛЕНО: сессия pdf_sessions НЕ очищается, idx сохраняется
         tx = transactions[idx]
         await state.update_data(
             amount=float(tx.get("amount", 0)),
@@ -848,17 +925,103 @@ async def pdf_item_handler(callback: types.CallbackQuery, state: FSMContext):
             card=tx.get("card", ""),
             date=tx.get("date", ""),
             comment=tx.get("merchant", ""),
+            tx_type=tx.get("tx_type", "Расход"),
             from_pdf=True,
             pdf_idx=idx,
         )
-        await callback.message.edit_reply_markup(reply_markup=None)
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
         await TransactionForm.category.set()
         await callback.message.answer(
-            f"✏️ Редактируем #{idx + 1}. Выберите категорию:",
+            f"✏️ Редактируем категорию для:\n<b>{tx.get('merchant','')}</b> — {tx.get('amount',0)} {tx.get('currency','RUB')}\n\nВыберите категорию:",
+            parse_mode="HTML",
             reply_markup=categories_kb()
         )
 
+    elif action == "edit_amt":
+        # Редактируем сумму/валюту
+        tx = transactions[idx]
+        await state.update_data(
+            pdf_idx=idx,
+            from_pdf=True,
+            currency=tx.get("currency", "RUB"),
+            date=tx.get("date", ""),
+            card=tx.get("card", ""),
+            comment=tx.get("merchant", ""),
+            tx_type=tx.get("tx_type", "Расход"),
+            category=tx.get("category", "Прочее"),
+            subcategory=tx.get("subcategory", ""),
+        )
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        await TransactionForm.edit_amount.set()
+        symbol = CURRENCY_SYMBOLS.get(tx.get("currency","RUB"), tx.get("currency","RUB"))
+        await callback.message.answer(
+            f"🔢 Текущая сумма: <b>{tx.get('amount',0)} {symbol}</b>\n\nВведите новую сумму:",
+            parse_mode="HTML",
+            reply_markup=back_kb()
+        )
+
     await callback.answer()
+
+# ============================================================
+# Редактирование суммы из PDF/скриншота
+# ============================================================
+@dp.message_handler(state=TransactionForm.edit_amount)
+async def process_edit_amount(message: types.Message, state: FSMContext):
+    if message.text == "⏪ Назад":
+        data    = await state.get_data()
+        idx     = data.get("pdf_idx", 0)
+        user_id = message.from_user.id
+        await state.finish()
+        await PDFForm.reviewing.set()
+        await show_pdf_transaction(message, user_id, idx)
+        return
+    try:
+        new_amount = float(message.text.replace(",", ".").replace(" ", ""))
+        if new_amount <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("Введите корректную сумму:", reply_markup=back_kb())
+        return
+    await state.update_data(new_amount=new_amount)
+    await TransactionForm.edit_currency.set()
+    await message.answer("Выберите валюту:", reply_markup=currencies_kb())
+
+@dp.message_handler(state=TransactionForm.edit_currency)
+async def process_edit_currency(message: types.Message, state: FSMContext):
+    if message.text == "⏪ Назад":
+        await TransactionForm.edit_amount.set()
+        await message.answer("Введите сумму:", reply_markup=back_kb())
+        return
+    if message.text not in CURRENCIES:
+        await message.answer("Выберите валюту из списка:", reply_markup=currencies_kb())
+        return
+
+    data       = await state.get_data()
+    idx        = data.get("pdf_idx", 0)
+    new_amount = data.get("new_amount", 0)
+    currency   = message.text
+    rate       = get_cbr_rate(currency)
+    amount_rub = round(new_amount * rate, 2)
+    user_id    = message.from_user.id
+
+    # Обновляем транзакцию в сессии
+    session = pdf_sessions.get(user_id)
+    if session and idx < len(session["transactions"]):
+        session["transactions"][idx]["amount"]     = new_amount
+        session["transactions"][idx]["currency"]   = currency
+        session["transactions"][idx]["rate"]       = rate
+        session["transactions"][idx]["amount_rub"] = amount_rub
+
+    await state.finish()
+    await PDFForm.reviewing.set()
+    await message.answer("✅ Сумма обновлена!", reply_markup=types.ReplyKeyboardRemove())
+    await show_pdf_transaction(message, user_id, idx)
 
 # ============================================================
 # Главное меню → новая транзакция
@@ -899,9 +1062,19 @@ async def process_tx_type(message: types.Message, state: FSMContext):
 @dp.message_handler(state=TransactionForm.category)
 async def process_category(message: types.Message, state: FSMContext):
     if message.text == "⏪ Назад":
-        data = await state.get_data()
+        data    = await state.get_data()
+        user_id = message.from_user.id
+
+        # Если редактируем из PDF/скриншота — возвращаемся к карточке транзакции
+        if data.get("from_pdf"):
+            idx = data.get("pdf_idx", 0)
+            await state.finish()
+            await PDFForm.reviewing.set()
+            await show_pdf_transaction(message, user_id, idx)
+            return
+
+        # Если редактируем из webhook — сохраняем как черновик
         if data.get("from_webhook") and data.get("amount"):
-            user_id = message.from_user.id
             drafts_add(user_id, {
                 "id":    str(uuid.uuid4())[:8],
                 "a":     data["amount"],
@@ -936,6 +1109,13 @@ async def process_category(message: types.Message, state: FSMContext):
         await state.update_data(subcategory="")
         data = await state.get_data()
         if data.get("from_webhook") or data.get("from_pdf"):
+            # Обновляем категорию в pdf_sessions если редактируем
+            if data.get("from_pdf"):
+                user_id = message.from_user.id
+                session = pdf_sessions.get(user_id)
+                if session:
+                    session["transactions"][data["pdf_idx"]]["category"]    = message.text
+                    session["transactions"][data["pdf_idx"]]["subcategory"] = ""
             await TransactionForm.final_confirmation.set()
             await message.answer(build_preview(data), parse_mode="HTML", reply_markup=confirmation_kb())
         else:
@@ -948,9 +1128,18 @@ async def process_category(message: types.Message, state: FSMContext):
 @dp.message_handler(state=TransactionForm.subcategory)
 async def process_subcategory(message: types.Message, state: FSMContext):
     if message.text == "⏪ Назад":
+        data = await state.get_data()
+        if data.get("from_pdf"):
+            idx = data.get("pdf_idx", 0)
+            user_id = message.from_user.id
+            await state.finish()
+            await PDFForm.reviewing.set()
+            await show_pdf_transaction(message, user_id, idx)
+            return
         await TransactionForm.category.set()
         await message.answer("Выберите категорию:", reply_markup=categories_kb())
         return
+
     data     = await state.get_data()
     category = data.get("category")
     tx_type  = data.get("tx_type", "Расход")
@@ -965,6 +1154,15 @@ async def process_subcategory(message: types.Message, state: FSMContext):
         return
 
     data = await state.get_data()
+
+    # Обновляем в pdf_sessions если редактируем
+    if data.get("from_pdf"):
+        user_id = message.from_user.id
+        session = pdf_sessions.get(user_id)
+        if session:
+            session["transactions"][data["pdf_idx"]]["category"]    = data["category"]
+            session["transactions"][data["pdf_idx"]]["subcategory"] = data.get("subcategory", "")
+
     if data.get("from_webhook") or data.get("from_pdf"):
         await TransactionForm.final_confirmation.set()
         await message.answer(build_preview(data), parse_mode="HTML", reply_markup=confirmation_kb())
@@ -1081,7 +1279,8 @@ async def process_comment(message: types.Message, state: FSMContext):
     await message.answer(build_preview(data), parse_mode="HTML", reply_markup=confirmation_kb())
 
 # ============================================================
-# Подтверждение
+# Подтверждение (ручной ввод, webhook, pdf)
+# ИСПРАВЛЕНО: кнопки "Изменить категорию" и "Изменить сумму/валюту" разделены
 # ============================================================
 @dp.message_handler(state=TransactionForm.final_confirmation)
 async def final_confirmation(message: types.Message, state: FSMContext):
@@ -1095,6 +1294,7 @@ async def final_confirmation(message: types.Message, state: FSMContext):
                 f"В рублях: {float(data.get('amount_rub', data.get('amount', 0))):,.2f} ₽",
                 message.from_user
             )
+            # Если редактировали из PDF — обновляем сессию и возвращаемся
             if data.get("from_pdf"):
                 user_id = message.from_user.id
                 session = pdf_sessions.get(user_id)
@@ -1109,17 +1309,39 @@ async def final_confirmation(message: types.Message, state: FSMContext):
                     return
             await message.answer("✅ Транзакция записана!", reply_markup=main_menu_kb())
             await state.finish()
+            await TransactionForm.waiting_for_action.set()
         except Exception as e:
             logging.error(f"Ошибка записи: {e}")
             await message.answer(f"❌ Ошибка: {e}", reply_markup=main_menu_kb())
             await state.finish()
 
-    elif message.text == "✏️ Изменить":
+    elif message.text == "✏️ Изменить категорию":
+        # Остаёмся в контексте (from_pdf/from_webhook сохранены в data)
         await TransactionForm.category.set()
-        await message.answer("Начнём заново. Выберите категорию:", reply_markup=categories_kb())
+        await message.answer("Выберите категорию:", reply_markup=categories_kb())
+
+    elif message.text == "🔢 Изменить сумму/валюту":
+        await TransactionForm.edit_amount.set()
+        data = await state.get_data()
+        symbol = CURRENCY_SYMBOLS.get(data.get("currency","RUB"), data.get("currency","RUB"))
+        await message.answer(
+            f"Текущая сумма: <b>{data.get('amount',0)} {symbol}</b>\nВведите новую сумму:",
+            parse_mode="HTML", reply_markup=back_kb()
+        )
 
     elif message.text == "❌ Отменить":
+        data    = await state.get_data()
+        user_id = message.from_user.id
+        # Если из PDF — возвращаемся к текущей карточке (не ломаем сессию)
+        if data.get("from_pdf"):
+            idx = data.get("pdf_idx", 0)
+            await state.finish()
+            await PDFForm.reviewing.set()
+            await message.answer("Отменено. Возвращаемся к транзакции:", reply_markup=types.ReplyKeyboardRemove())
+            await show_pdf_transaction(message, user_id, idx)
+            return
         await state.finish()
+        await TransactionForm.waiting_for_action.set()
         await message.answer("Операция отменена.", reply_markup=main_menu_kb())
 
 # ============================================================
@@ -1274,6 +1496,7 @@ async def process_draft(callback: types.CallbackQuery, state: FSMContext):
 
 # ============================================================
 # Обработка фото (скриншот банка)
+# ИСПРАВЛЕНО: AI теперь видит category_hint и передаёт его в guess_category
 # ============================================================
 @dp.message_handler(content_types=types.ContentType.PHOTO, state="*")
 async def handle_screenshot(message: types.Message, state: FSMContext):
@@ -1298,24 +1521,28 @@ async def handle_screenshot(message: types.Message, state: FSMContext):
             return
 
         if len(transactions) == 1:
-            tx        = transactions[0]
-            amount    = float(tx.get("amount", 0))
-            currency  = tx.get("currency", "RUB")
-            merchant  = tx.get("merchant", "")
-            card      = tx.get("card", "")
-            tx_type_w = tx.get("tx_type", "Расход")
-            date_raw  = tx.get("date", "")
-            date      = date_raw if date_raw else datetime.now().strftime("%d.%m.%Y, %H:%M")
-            rate      = get_cbr_rate(currency)
+            tx         = transactions[0]
+            amount     = float(tx.get("amount", 0))
+            currency   = tx.get("currency", "RUB")
+            merchant   = tx.get("merchant", "")
+            card       = tx.get("card", "")
+            tx_type_w  = tx.get("tx_type", "Расход")
+            date_raw   = tx.get("date", "")
+            date       = date_raw if date_raw else datetime.now().strftime("%d.%m.%Y, %H:%M")
+            hint       = tx.get("category_hint", "")
+            rate       = get_cbr_rate(currency)
             amount_rub = round(amount * rate, 2)
-            symbol    = CURRENCY_SYMBOLS.get(currency, currency)
-            tx_icon   = "💰" if tx_type_w == "Доход" else "💸"
+            symbol     = CURRENCY_SYMBOLS.get(currency, currency)
+            tx_icon    = "💰" if tx_type_w == "Доход" else "💸"
+
+            # AI определяет категорию с подсказкой с экрана
+            category, subcategory = guess_category(merchant, amount, hint=hint)
 
             tx_id = str(uuid.uuid4())[:8]
             pending_transactions[tx_id] = {
                 "a": amount, "m": merchant, "c": card, "d": date,
                 "cur": currency, "rate": rate, "a_rub": amount_rub,
-                "tx_type": tx_type_w,
+                "tx_type": tx_type_w, "category": category, "subcategory": subcategory,
             }
             user_id = message.from_user.id
             drafts_add(user_id, {
@@ -1323,44 +1550,53 @@ async def handle_screenshot(message: types.Message, state: FSMContext):
                 "cur": currency, "rate": rate, "a_rub": amount_rub, "tx_type": tx_type_w,
             })
 
-            kb = types.InlineKeyboardMarkup(row_width=3)
-            quick_cats = ["Жизнь", "Транспорт", "Дом", "Здоровье", "Развлечения", "Прочее"]
+            kb = types.InlineKeyboardMarkup(row_width=2)
+            # Показываем AI-предложение первым
+            ai_label = f"✅ {category}" + (f" / {subcategory}" if subcategory else "")
+            kb.add(types.InlineKeyboardButton(f"🤖 {ai_label}", callback_data=f"wbq|{tx_id}|{category}|{subcategory}"))
+            # Быстрые категории
+            quick_cats = [c for c in ["Жизнь", "Транспорт", "Дом", "Здоровье", "Развлечения", "Прочее"] if c != category][:5]
             for cat in quick_cats:
-                kb.add(types.InlineKeyboardButton(cat, callback_data=f"wbq|{tx_id}|{cat}"))
+                kb.add(types.InlineKeyboardButton(cat, callback_data=f"wbq|{tx_id}|{cat}|"))
             kb.add(
                 types.InlineKeyboardButton("📋 Все категории", callback_data=f"wb|{tx_id}"),
                 types.InlineKeyboardButton("❌ Пропустить",     callback_data="wb|no")
             )
+            hint_line = f"\n💡 Банк: <i>{hint}</i>" if hint else ""
             preview = (
                 f"📸 <b>Скриншот распознан:</b>\n\n"
                 f"{tx_icon} {tx_type_w}\n"
                 f"💵 {amount:,.2f} {symbol}\n"
                 f"🏪 {merchant}\n"
                 f"💳 {card}\n"
-                f"📅 {date}\n\n"
-                f"Выберите категорию:"
+                f"📅 {date}{hint_line}\n\n"
+                f"🤖 AI предлагает: <b>{ai_label}</b>\n\nВыберите категорию:"
             )
             await message.answer(preview, parse_mode="HTML", reply_markup=kb)
             return
 
-        # Несколько транзакций
+        # Несколько транзакций — обогащаем с AI-категориями
         existing = get_existing_transactions()
+        await message.answer(f"📊 Найдено {len(transactions)} транзакций. Определяю категории через AI...")
         enriched = []
         for tx in transactions:
             date_part    = str(tx.get("date", "")).split(",")[0].strip()
             amount_str   = str(tx.get("amount", ""))
-            merchant     = str(tx.get("merchant", "")).strip().lower()
-            is_duplicate = f"{date_part}|{amount_str}|{merchant}" in existing
+            merchant_key = str(tx.get("merchant", "")).strip().lower()
+            is_duplicate = f"{date_part}|{amount_str}|{merchant_key}" in existing
             currency     = tx.get("currency", "RUB")
             rate         = get_cbr_rate(currency)
             amount_rub   = round(float(tx.get("amount", 0)) * rate, 2)
+            hint         = tx.get("category_hint", "")
+            category, subcategory = guess_category(tx.get("merchant", ""), tx.get("amount", 0), hint=hint)
             enriched.append({
                 **tx,
-                "category":     "Прочее",
-                "subcategory":  "",
-                "rate":         rate,
-                "amount_rub":   amount_rub,
-                "is_duplicate": is_duplicate,
+                "category":      category,
+                "subcategory":   subcategory,
+                "rate":          rate,
+                "amount_rub":    amount_rub,
+                "is_duplicate":  is_duplicate,
+                "category_hint": hint,
             })
 
         user_id = message.from_user.id
@@ -1413,10 +1649,14 @@ async def handle_sms_text(message: types.Message, state: FSMContext):
     symbol    = CURRENCY_SYMBOLS.get(currency, currency)
     tx_icon   = "💰" if tx_type_w == "Доход" else "💸"
 
+    # AI определяет категорию
+    category, subcategory = guess_category(merchant, amount)
+
     tx_id = str(uuid.uuid4())[:8]
     pending_transactions[tx_id] = {
         "a": amount, "m": merchant, "c": card, "d": date,
-        "cur": currency, "rate": rate, "a_rub": amount_rub, "tx_type": tx_type_w,
+        "cur": currency, "rate": rate, "a_rub": amount_rub,
+        "tx_type": tx_type_w, "category": category, "subcategory": subcategory,
     }
     user_id = message.from_user.id
     drafts_add(user_id, {
@@ -1424,10 +1664,12 @@ async def handle_sms_text(message: types.Message, state: FSMContext):
         "cur": currency, "rate": rate, "a_rub": amount_rub, "tx_type": tx_type_w,
     })
 
-    kb = types.InlineKeyboardMarkup(row_width=3)
-    quick_cats = ["Жизнь", "Транспорт", "Дом", "Здоровье", "Развлечения", "Прочее"]
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    ai_label = f"✅ {category}" + (f" / {subcategory}" if subcategory else "")
+    kb.add(types.InlineKeyboardButton(f"🤖 {ai_label}", callback_data=f"wbq|{tx_id}|{category}|{subcategory}"))
+    quick_cats = [c for c in ["Жизнь", "Транспорт", "Дом", "Здоровье", "Развлечения", "Прочее"] if c != category][:5]
     for cat in quick_cats:
-        kb.add(types.InlineKeyboardButton(cat, callback_data=f"wbq|{tx_id}|{cat}"))
+        kb.add(types.InlineKeyboardButton(cat, callback_data=f"wbq|{tx_id}|{cat}|"))
     kb.add(
         types.InlineKeyboardButton("📋 Все категории", callback_data=f"wb|{tx_id}"),
         types.InlineKeyboardButton("❌ Пропустить",     callback_data="wb|no")
@@ -1435,17 +1677,19 @@ async def handle_sms_text(message: types.Message, state: FSMContext):
     preview = f"📱 <b>SMS распознано:</b>\n\n{tx_icon} {tx_type_w}\n💵 {amount:,.2f} {symbol}"
     if currency != "RUB":
         preview += f"\n🔄 {amount_rub:,.2f} ₽"
-    preview += f"\n🏪 {merchant}\n💳 {card}\n📅 {date}\n\nВыберите категорию:"
+    preview += f"\n🏪 {merchant}\n💳 {card}\n📅 {date}\n\n🤖 AI предлагает: <b>{ai_label}</b>\n\nВыберите категорию:"
     await message.answer(preview, parse_mode="HTML", reply_markup=kb)
 
 # ============================================================
-# Webhook — быстрые категории
+# Webhook — быстрые категории (обновлённый формат с subcategory)
 # ============================================================
 @dp.callback_query_handler(lambda c: c.data.startswith("wbq|"), state="*")
 async def process_webhook_quick(callback: types.CallbackQuery, state: FSMContext):
     parts    = callback.data.split("|")
     tx_id    = parts[1]
     category = parts[2]
+    # subcategory передаётся в parts[3] если есть (новый формат)
+    subcategory_preset = parts[3] if len(parts) > 3 else ""
 
     tx = pending_transactions.pop(tx_id, None)
     if not tx:
@@ -1454,18 +1698,22 @@ async def process_webhook_quick(callback: types.CallbackQuery, state: FSMContext
         return
 
     user_id = callback.from_user.id
-
     await state.update_data(
         amount=tx["a"], currency=tx["cur"], rate=tx["rate"],
         amount_rub=tx["a_rub"], card=tx["c"], date=tx["d"],
         comment=tx["m"], from_webhook=True, category=category,
         tx_type=tx.get("tx_type", "Расход"),
+        subcategory=subcategory_preset,
     )
 
     subs = CATEGORIES.get(category, [])
-    await callback.message.edit_reply_markup(reply_markup=None)
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
 
-    if subs:
+    if subs and not subcategory_preset:
+        # Нет пресета подкатегории — спросим
         await TransactionForm.subcategory.set()
         kb = types.InlineKeyboardMarkup(row_width=2)
         for sub in subs:
@@ -1477,7 +1725,7 @@ async def process_webhook_quick(callback: types.CallbackQuery, state: FSMContext
             reply_markup=kb
         )
     else:
-        await state.update_data(subcategory="")
+        # Используем пресет или сразу финальное подтверждение
         data = await state.get_data()
         await TransactionForm.final_confirmation.set()
         await callback.message.answer(build_preview(data), parse_mode="HTML", reply_markup=confirmation_kb())
@@ -1488,7 +1736,10 @@ async def process_webhook_sub(callback: types.CallbackQuery, state: FSMContext):
     sub = callback.data.split("|")[1]
     await state.update_data(subcategory="" if sub == "none" else sub)
     data = await state.get_data()
-    await callback.message.edit_reply_markup(reply_markup=None)
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
     await TransactionForm.final_confirmation.set()
     await callback.message.answer(build_preview(data), parse_mode="HTML", reply_markup=confirmation_kb())
     await callback.answer()
@@ -1500,15 +1751,18 @@ async def process_webhook_sub(callback: types.CallbackQuery, state: FSMContext):
 async def process_webhook_callback(callback: types.CallbackQuery, state: FSMContext):
     payload = callback.data[3:]
     if payload == "no":
-        await callback.message.edit_reply_markup(reply_markup=None)
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
         await callback.message.answer("❌ Пропущено.")
         await callback.answer()
         return
     tx = pending_transactions.pop(payload, None)
     if not tx:
         await callback.message.edit_text("❌ Транзакция устарела.")
+        await callback.answer()
         return
-    user_id = callback.from_user.id
     await state.update_data(
         amount=tx.get("a", 0),
         currency=tx.get("cur", "RUB"),
@@ -1521,7 +1775,10 @@ async def process_webhook_callback(callback: types.CallbackQuery, state: FSMCont
         from_webhook=True,
     )
     symbol = CURRENCY_SYMBOLS.get(tx.get("cur", "RUB"), "₽")
-    await callback.message.edit_reply_markup(reply_markup=None)
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
     await callback.message.answer(
         f"✅ Записываем: {tx.get('a')} {symbol} — {tx.get('m', '')}\n\nВыберите категорию:",
         reply_markup=categories_kb()
@@ -1553,26 +1810,32 @@ def webhook_transaction():
         amount_rub = round(amount * rate, 2)
         symbol     = CURRENCY_SYMBOLS.get(currency, currency)
 
+        # AI категория сразу
+        category, subcategory = guess_category(merchant, amount)
+
         message_text = f"🔔 <b>Новая транзакция:</b>\n\n💰 Сумма: {amount:,.2f} {symbol}\n"
         if currency != "RUB":
             message_text += f"🔄 В рублях: {amount_rub:,.2f} ₽\n"
-        message_text += f"🏪 Место: {merchant}\n💳 Карта: {card}\n📅 Дата: {date}\n\nЗаписать?"
+        ai_label = f"{category}" + (f" / {subcategory}" if subcategory else "")
+        message_text += f"🏪 Место: {merchant}\n💳 Карта: {card}\n📅 Дата: {date}\n🤖 AI: {ai_label}\n\nЗаписать?"
 
         tx_id   = str(uuid.uuid4())[:8]
         uid_int = int(user_id)
         pending_transactions[tx_id] = {
             "a": amount, "m": merchant, "c": card, "d": date,
-            "cur": currency, "rate": rate, "a_rub": amount_rub, "tx_type": tx_type_w,
+            "cur": currency, "rate": rate, "a_rub": amount_rub,
+            "tx_type": tx_type_w, "category": category, "subcategory": subcategory,
         }
         drafts_add(uid_int, {
             "id": str(uuid.uuid4())[:8], "a": amount, "m": merchant, "c": card, "d": date,
             "cur": currency, "rate": rate, "a_rub": amount_rub, "tx_type": tx_type_w,
         })
 
-        kb = types.InlineKeyboardMarkup(row_width=3)
-        quick_cats = ["Жизнь", "Транспорт", "Дом", "Здоровье", "Развлечения", "Прочее"]
+        kb = types.InlineKeyboardMarkup(row_width=2)
+        kb.add(types.InlineKeyboardButton(f"🤖 {ai_label}", callback_data=f"wbq|{tx_id}|{category}|{subcategory}"))
+        quick_cats = [c for c in ["Жизнь", "Транспорт", "Дом", "Здоровье", "Развлечения", "Прочее"] if c != category][:4]
         for cat in quick_cats:
-            kb.add(types.InlineKeyboardButton(cat, callback_data=f"wbq|{tx_id}|{cat}"))
+            kb.add(types.InlineKeyboardButton(cat, callback_data=f"wbq|{tx_id}|{cat}|"))
         kb.add(
             types.InlineKeyboardButton("📋 Все категории", callback_data=f"wb|{tx_id}"),
             types.InlineKeyboardButton("❌ Пропустить",     callback_data="wb|no")
@@ -1589,7 +1852,7 @@ def webhook_transaction():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 # ============================================================
-# Flask webhook — SMS
+# Flask webhook — SMS (от iPhone Shortcuts)
 # ============================================================
 @app.route("/webhook/sms", methods=["POST"])
 def webhook_sms():
@@ -1619,26 +1882,32 @@ def webhook_sms():
         symbol    = CURRENCY_SYMBOLS.get(currency, currency)
         tx_icon   = "💰" if tx_type_w == "Доход" else "💸"
 
+        # AI категория
+        category, subcategory = guess_category(merchant, amount)
+        ai_label = f"{category}" + (f" / {subcategory}" if subcategory else "")
+
         message_text = f"📱 <b>SMS транзакция:</b>\n\n{tx_icon} {tx_type_w}\n💵 {amount:,.2f} {symbol}\n"
         if currency != "RUB":
             message_text += f"🔄 В рублях: {amount_rub:,.2f} ₽\n"
-        message_text += f"🏪 {merchant}\n💳 {card}\n📅 {date}\n\nЗаписать?"
+        message_text += f"🏪 {merchant}\n💳 {card}\n📅 {date}\n🤖 AI: {ai_label}\n\nЗаписать?"
 
         tx_id   = str(uuid.uuid4())[:8]
         uid_int = int(user_id)
         pending_transactions[tx_id] = {
             "a": amount, "m": merchant, "c": card, "d": date,
-            "cur": currency, "rate": rate, "a_rub": amount_rub, "tx_type": tx_type_w,
+            "cur": currency, "rate": rate, "a_rub": amount_rub,
+            "tx_type": tx_type_w, "category": category, "subcategory": subcategory,
         }
         drafts_add(uid_int, {
             "id": str(uuid.uuid4())[:8], "a": amount, "m": merchant, "c": card, "d": date,
             "cur": currency, "rate": rate, "a_rub": amount_rub, "tx_type": tx_type_w,
         })
 
-        kb = types.InlineKeyboardMarkup(row_width=3)
-        quick_cats = ["Жизнь", "Транспорт", "Дом", "Здоровье", "Развлечения", "Прочее"]
+        kb = types.InlineKeyboardMarkup(row_width=2)
+        kb.add(types.InlineKeyboardButton(f"🤖 {ai_label}", callback_data=f"wbq|{tx_id}|{category}|{subcategory}"))
+        quick_cats = [c for c in ["Жизнь", "Транспорт", "Дом", "Здоровье", "Развлечения", "Прочее"] if c != category][:4]
         for cat in quick_cats:
-            kb.add(types.InlineKeyboardButton(cat, callback_data=f"wbq|{tx_id}|{cat}"))
+            kb.add(types.InlineKeyboardButton(cat, callback_data=f"wbq|{tx_id}|{cat}|"))
         kb.add(
             types.InlineKeyboardButton("📋 Все категории", callback_data=f"wb|{tx_id}"),
             types.InlineKeyboardButton("❌ Пропустить",     callback_data="wb|no")
@@ -1659,7 +1928,8 @@ def webhook_sms():
 # ============================================================
 @dp.message_handler(state="*")
 async def unknown_message(message: types.Message, state: FSMContext):
-    if await state.get_state() is None:
+    current = await state.get_state()
+    if current is None or current == TransactionForm.waiting_for_action.state:
         await message.answer("Не понимаю. Используйте меню 👇", reply_markup=main_menu_kb())
 
 # ============================================================
