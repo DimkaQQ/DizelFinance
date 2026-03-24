@@ -2,366 +2,141 @@
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Wizard — DizelTrade</title>
-<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>DizelTrade</title>
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet">
 <style>
 :root{
-  --bg:#0c0c0c;
-  --surface:#151515;
-  --surface2:#1c1c1c;
-  --border:#252525;
-  --accent:#e8b84b;
-  --accent2:#c94f1e;
-  --text:#e4e4e4;
-  --muted:#606060;
-  --ok:#3a9a5c;
-  --danger:#e07a60;
+  --bg:#0c0c0c;--surface:#151515;--surface2:#1c1c1c;--border:#252525;
+  --accent:#CCE01F;--accent2:#c94f1e;--text:#e4e4e4;--muted:#606060;
+  --success:#3a9a5c;--rad:2px
 }
-
 *{box-sizing:border-box;margin:0;padding:0}
-html,body{height:100%}
-body{
-  background:var(--bg);
-  color:var(--text);
-  font-family:'IBM Plex Sans',sans-serif;
-  min-height:100vh;
-}
+html,body{height:100%;overflow:hidden}
+body{background:var(--bg);color:var(--text);font-family:'IBM Plex Sans',sans-serif;
+  display:flex;flex-direction:column}
 
-header{
-  background:var(--surface);
-  border-bottom:2px solid var(--accent);
-  position:sticky;
-  top:0;
-  z-index:50;
-}
-.header-inner{
-  max-width:480px;
-  margin:0 auto;
-  height:56px;
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  padding:0 16px;
-}
-.logo{
-  font-family:'Oswald',sans-serif;
-  font-size:19px;
-  font-weight:700;
-  letter-spacing:.08em;
-  color:var(--accent);
-  text-transform:uppercase;
-  text-decoration:none;
-}
+header{background:var(--surface);border-bottom:2px solid var(--accent);
+  padding:0 16px;flex-shrink:0;z-index:10}
+.header-inner{max-width:480px;margin:0 auto;display:flex;align-items:center;
+  justify-content:space-between;height:50px}
+.logo{font-family:'Oswald',sans-serif;font-size:19px;font-weight:700;
+  letter-spacing:.08em;color:var(--accent);text-transform:uppercase;text-decoration:none}
 .logo span{color:var(--muted);font-weight:400}
-.header-right{
-  display:flex;
-  align-items:center;
-  gap:10px;
-  font-family:'IBM Plex Mono',monospace;
-  font-size:11px;
-  color:var(--muted);
+.header-right{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--muted);
+  display:flex;align-items:center;gap:10px}
+.back-link{color:var(--muted);text-decoration:none;font-size:11px;
+  border:1px solid var(--border);padding:4px 10px;transition:all .15s}
+.back-link:hover{color:var(--accent);border-color:var(--accent)}
+
+.progress-wrap{background:var(--surface);border-bottom:1px solid var(--border);
+  padding:10px 16px;flex-shrink:0}
+.progress-inner{max-width:480px;margin:0 auto}
+.progress-track{height:3px;background:var(--border);border-radius:2px;overflow:hidden}
+.progress-fill{height:100%;background:var(--accent);transition:width .3s ease;border-radius:2px}
+.progress-label{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--muted);
+  margin-top:6px;letter-spacing:.05em;display:flex;justify-content:space-between}
+
+.steps-outer{flex:1;overflow:hidden;position:relative}
+.steps-inner{max-width:480px;margin:0 auto;height:100%;position:relative}
+
+.step{position:absolute;inset:0;padding:28px 16px 100px;overflow-y:auto;
+  display:flex;flex-direction:column;
+  opacity:0;pointer-events:none;transform:translateX(40px);
+  transition:opacity .25s,transform .25s}
+.step.active{opacity:1;pointer-events:all;transform:translateX(0)}
+.step.exit-left{opacity:0;transform:translateX(-40px)}
+
+.step-title{font-family:'Oswald',sans-serif;font-size:22px;font-weight:600;
+  text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px;line-height:1.1}
+.step-sub{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--muted);
+  margin-bottom:24px;letter-spacing:.04em}
+
+.field{margin-bottom:0;flex:1;display:flex;flex-direction:column}
+label{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--muted);margin-bottom:8px;display:block}
+input[type=text],input[type=number],input[type=password],textarea{
+  width:100%;background:var(--surface2);border:1px solid var(--border);
+  color:var(--text);padding:14px 16px;font-family:'IBM Plex Sans',sans-serif;
+  font-size:18px;outline:none;border-radius:var(--rad);
+  transition:border-color .15s;-webkit-appearance:none;appearance:none}
+input:focus,textarea:focus{border-color:var(--accent)}
+textarea{resize:none;height:90px;font-size:16px}
+
+.hint{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--muted);
+  margin-top:8px;line-height:1.5}
+
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:4px}
+.chip{
+  padding:10px 16px;background:var(--surface2);border:1px solid var(--border);
+  font-family:'IBM Plex Sans',sans-serif;font-size:14px;cursor:pointer;
+  border-radius:var(--rad);transition:all .12s;user-select:none;color:var(--text)}
+.chip:hover{border-color:var(--accent);color:var(--accent)}
+.chip.selected{background:rgba(204,224,31,.12);border-color:var(--accent);color:var(--accent)}
+
+.debt-list{display:flex;flex-direction:column;gap:6px}
+.debt-item{
+  padding:12px 14px;background:var(--surface2);
+  border:1px solid var(--border);border-left:3px solid var(--accent2);
+  cursor:pointer;display:flex;justify-content:space-between;align-items:center;
+  transition:all .12s
 }
-.back-link{
-  color:var(--muted);
-  text-decoration:none;
-  border:1px solid var(--border);
-  padding:6px 12px;
-  transition:.15s;
-}
-.back-link:hover{
-  color:var(--accent);
-  border-color:var(--accent);
+.debt-item:hover,.debt-item.selected{border-left-color:var(--accent);background:#1a1a1a}
+.debt-item .name{font-size:15px}
+.debt-item .amount{font-family:'IBM Plex Mono',monospace;font-size:14px;color:#f0836a}
+
+.empty-state{
+  color:var(--muted);font-family:'IBM Plex Mono',monospace;font-size:12px;
+  padding:8px 0
 }
 
-.progress-wrap{
-  background:var(--surface);
-  border-bottom:1px solid var(--border);
-}
-.progress-inner{
-  max-width:480px;
-  margin:0 auto;
-  padding:12px 16px 14px;
-}
-.progress-track{
-  width:100%;
-  height:6px;
-  background:#111;
-  border:1px solid var(--border);
-  overflow:hidden;
-}
-.progress-fill{
-  height:100%;
-  width:0%;
-  background:var(--accent);
-  transition:width .2s ease;
-}
-.progress-label{
-  margin-top:10px;
-  display:flex;
-  justify-content:space-between;
-  gap:12px;
-  font-family:'IBM Plex Mono',monospace;
-  font-size:11px;
-  color:var(--muted);
-}
+.btn-row{position:fixed;bottom:0;left:0;right:0;
+  background:linear-gradient(to top, var(--bg) 70%, transparent);
+  padding:16px 16px 24px;z-index:20}
+.btn-row-inner{max-width:480px;margin:0 auto;display:flex;gap:8px}
 
-.page{
-  max-width:480px;
-  margin:0 auto;
-  padding:18px 16px 120px;
-}
+.btn{flex:1;padding:14px;border:none;cursor:pointer;
+  font-family:'Oswald',sans-serif;font-size:16px;font-weight:600;
+  letter-spacing:.08em;text-transform:uppercase;
+  border-radius:var(--rad);transition:all .15s;
+  display:flex;align-items:center;justify-content:center;gap:8px}
+.btn-back{background:var(--surface2);color:var(--muted);border:1px solid var(--border);flex:0 0 52px;padding:14px 0}
+.btn-back:hover{color:var(--text)}
+.btn-next{background:var(--accent);color:#0c0c0c}
+.btn-next:hover{filter:brightness(1.06)}
+.btn-next:active{transform:scale(.98)}
+.btn-next:disabled{background:var(--surface2);color:var(--muted);cursor:not-allowed}
 
-.step-card{
-  background:var(--surface);
-  border:1px solid var(--border);
-  padding:18px 16px;
-}
-.step-kicker{
-  font-family:'IBM Plex Mono',monospace;
-  font-size:11px;
-  color:var(--muted);
-  margin-bottom:10px;
-}
-.step-title{
-  font-family:'Oswald',sans-serif;
-  font-size:28px;
-  line-height:1.05;
-  text-transform:uppercase;
-  letter-spacing:.04em;
-  margin-bottom:8px;
-}
-.step-sub{
-  font-family:'IBM Plex Mono',monospace;
-  font-size:12px;
-  color:var(--muted);
-  margin-bottom:18px;
-}
+#done-screen{display:none;position:fixed;inset:0;background:var(--bg);
+  z-index:100;flex-direction:column;align-items:center;justify-content:center;
+  padding:32px;text-align:center}
+#done-screen.show{display:flex}
+.done-icon{font-size:64px;margin-bottom:20px;animation:pop .4s ease}
+@keyframes pop{0%{transform:scale(0)}80%{transform:scale(1.1)}100%{transform:scale(1)}}
+.done-title{font-family:'Oswald',sans-serif;font-size:28px;font-weight:700;
+  text-transform:uppercase;letter-spacing:.06em;color:var(--accent);margin-bottom:8px}
+.done-msg{font-family:'IBM Plex Mono',monospace;font-size:13px;color:var(--muted);
+  margin-bottom:32px;line-height:1.6}
+.done-btn{padding:14px 32px;background:var(--accent);color:#0c0c0c;border:none;
+  font-family:'Oswald',sans-serif;font-size:16px;font-weight:600;
+  letter-spacing:.08em;text-transform:uppercase;cursor:pointer;
+  border-radius:var(--rad);margin-bottom:12px;width:100%;max-width:280px;
+  transition:filter .15s}
+.done-btn:hover{filter:brightness(1.06)}
+.done-btn-sec{background:transparent;color:var(--muted);border:1px solid var(--border)}
+.done-btn-sec:hover{color:var(--text);background:transparent}
 
-.step-error{
-  display:none;
-  background:#1e0e08;
-  border-left:3px solid var(--accent2);
-  color:var(--danger);
-  padding:10px 12px;
-  font-family:'IBM Plex Mono',monospace;
-  font-size:12px;
-  margin-bottom:16px;
-}
+.step-error{background:#1e0e08;border-left:3px solid var(--accent2);
+  color:#e07a60;padding:10px 14px;font-family:'IBM Plex Mono',monospace;
+  font-size:12px;margin-bottom:16px;display:none}
 .step-error.show{display:block}
 
-label{
-  display:block;
-  font-family:'IBM Plex Mono',monospace;
-  font-size:10px;
-  letter-spacing:.08em;
-  text-transform:uppercase;
-  color:var(--muted);
-  margin-bottom:8px;
-}
-
-input[type="text"],
-input[type="number"],
-textarea{
-  width:100%;
-  background:var(--surface2);
-  color:var(--text);
-  border:1px solid var(--border);
-  padding:13px 14px;
-  font-family:'IBM Plex Sans',sans-serif;
-  font-size:16px;
-  outline:none;
-  border-radius:0;
-  appearance:none;
-}
-input:focus,
-textarea:focus{
-  border-color:var(--accent);
-}
-textarea{
-  resize:vertical;
-  min-height:120px;
-}
-
-.hint{
-  margin-top:8px;
-  color:var(--muted);
-  font-family:'IBM Plex Mono',monospace;
-  font-size:11px;
-}
-
-.chips{
-  display:flex;
-  flex-wrap:wrap;
-  gap:8px;
-}
-.chip{
-  background:var(--surface2);
-  border:1px solid var(--border);
-  color:var(--text);
-  padding:12px 14px;
-  cursor:pointer;
-  font-family:'IBM Plex Sans',sans-serif;
-  font-size:14px;
-  transition:.15s;
-  user-select:none;
-}
-.chip:hover{
-  border-color:var(--accent);
-}
-.chip.selected{
-  background:rgba(232,184,75,.12);
-  border-color:var(--accent);
-  color:#fff2c7;
-}
-
-.debt-list{
-  display:flex;
-  flex-direction:column;
-  gap:8px;
-  margin-bottom:12px;
-}
-.debt-item{
-  background:var(--surface2);
-  border:1px solid var(--border);
-  padding:12px 14px;
-  cursor:pointer;
-  transition:.15s;
-}
-.debt-item:hover{
-  border-color:var(--accent);
-}
-.debt-item.selected{
-  background:rgba(232,184,75,.12);
-  border-color:var(--accent);
-}
-.debt-name{
-  font-size:14px;
-  font-weight:600;
-}
-.debt-sum{
-  margin-top:4px;
-  font-family:'IBM Plex Mono',monospace;
-  font-size:11px;
-  color:var(--muted);
-}
-.empty-state{
-  background:var(--surface2);
-  border:1px dashed var(--border);
-  color:var(--muted);
-  padding:14px;
-  font-family:'IBM Plex Mono',monospace;
-  font-size:12px;
-}
-
-.btn-row{
-  position:fixed;
-  left:0;
-  right:0;
-  bottom:0;
-  background:linear-gradient(to top, rgba(12,12,12,1) 60%, rgba(12,12,12,.85));
-  padding:14px 0 18px;
-  z-index:40;
-}
-.btn-row-inner{
-  max-width:480px;
-  margin:0 auto;
-  padding:0 16px;
-  display:flex;
-  gap:12px;
-}
-.btn{
-  border:none;
-  cursor:pointer;
-  transition:.15s;
-  text-transform:uppercase;
-  letter-spacing:.06em;
-  font-family:'Oswald',sans-serif;
-}
-.btn:active{transform:scale(.99)}
-.btn-back{
-  width:74px;
-  background:var(--surface);
-  color:var(--muted);
-  border:1px solid var(--border);
-  font-size:24px;
-}
-.btn-next{
-  flex:1;
-  min-height:74px;
-  background:var(--accent);
-  color:#111;
-  font-size:22px;
-  font-weight:600;
-}
-.btn-next:hover{background:#f1c65e}
-
-#done-screen{
-  display:none;
-  text-align:center;
-  background:var(--surface);
-  border:1px solid var(--border);
-  padding:30px 18px;
-}
-#done-screen.show{display:block}
-.done-icon{
-  font-size:38px;
-  margin-bottom:14px;
-}
-.done-title{
-  font-family:'Oswald',sans-serif;
-  font-size:28px;
-  text-transform:uppercase;
-  margin-bottom:10px;
-}
-.done-msg{
-  color:var(--muted);
-  font-family:'IBM Plex Mono',monospace;
-  font-size:12px;
-  margin-bottom:20px;
-  line-height:1.6;
-  white-space:pre-wrap;
-}
-.done-btn{
-  display:block;
-  width:100%;
-  margin-bottom:10px;
-  padding:14px;
-  background:var(--accent);
-  color:#111;
-  border:none;
-  cursor:pointer;
-  font-family:'Oswald',sans-serif;
-  font-size:18px;
-  text-transform:uppercase;
-}
-.done-btn-sec{
-  background:var(--surface2);
-  color:var(--text);
-  border:1px solid var(--border);
-}
-
-#loading{
-  display:none;
-  position:fixed;
-  inset:0;
-  background:rgba(0,0,0,.7);
-  z-index:200;
-  align-items:center;
-  justify-content:center;
-}
+#loading{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);
+  z-index:200;align-items:center;justify-content:center}
 #loading.show{display:flex}
-.spinner{
-  width:42px;
-  height:42px;
-  border:3px solid var(--border);
-  border-top-color:var(--accent);
-  border-radius:50%;
-  animation:spin .7s linear infinite;
-}
-@keyframes spin{
-  to{transform:rotate(360deg)}
-}
+.spinner{width:40px;height:40px;border:3px solid var(--border);
+  border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
 </style>
 </head>
 <body>
@@ -378,29 +153,19 @@ textarea{
 
 <div class="progress-wrap">
   <div class="progress-inner">
-    <div class="progress-track">
-      <div class="progress-fill" id="progress-fill"></div>
-    </div>
+    <div class="progress-track"><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>
     <div class="progress-label">
       <span id="progress-section">—</span>
-      <span id="progress-count">—</span>
+      <span id="progress-count">1 / 1</span>
     </div>
   </div>
 </div>
 
-<div class="page">
-  <div id="steps-container"></div>
-
-  <div id="done-screen">
-    <div class="done-icon">✅</div>
-    <div class="done-title">Записано</div>
-    <div class="done-msg" id="done-msg"></div>
-    <button class="done-btn" onclick="location.href='/wizard/{{ section }}'">Новая запись</button>
-    <button class="done-btn done-btn-sec" onclick="location.href='/menu'">В меню</button>
-  </div>
+<div class="steps-outer">
+  <div class="steps-inner" id="steps-container"></div>
 </div>
 
-<div class="btn-row" id="btn-row">
+<div class="btn-row">
   <div class="btn-row-inner">
     <button class="btn btn-back" id="btn-back" type="button">←</button>
     <button class="btn btn-next" id="btn-next" type="button">
@@ -409,7 +174,22 @@ textarea{
   </div>
 </div>
 
+<div id="done-screen">
+  <div class="done-icon">✅</div>
+  <div class="done-title">Записано!</div>
+  <div class="done-msg" id="done-msg"></div>
+  <button class="done-btn" onclick="location.href='/wizard/{{ section }}'">Новая запись</button>
+  <button class="done-btn done-btn-sec" onclick="location.href='/menu'">В меню</button>
+</div>
+
 <div id="loading"><div class="spinner"></div></div>
+
+<script>
+const SECTION = {{ section | tojson }};
+const MACHINES = {{ machines | tojson }};
+const AUTO_FIELDS = {{ auto_fields | tojson }};
+const ARTICLES = {{ articles | tojson }};
+</script>
 
 <script>
 const WIZARDS = {
@@ -421,8 +201,7 @@ const WIZARDS = {
       type: 'chips',
       field: 'machine',
       options: () => MACHINES,
-      required: true,
-      label: 'Машина'
+      required: true
     },
     {
       id: 'field',
@@ -431,8 +210,7 @@ const WIZARDS = {
       type: 'chips',
       field: 'field',
       options: () => AUTO_FIELDS,
-      required: true,
-      label: 'Тип записи'
+      required: true
     },
     {
       id: 'value',
@@ -461,8 +239,7 @@ const WIZARDS = {
       type: 'textarea',
       field: 'comment',
       required: false,
-      label: 'Комментарий',
-      hint: 'Если рейс в долг: долг "Имя должника"'
+      hint: '💡 Пример: долг "Lao" — оплата позже'
     }
   ],
 
@@ -479,56 +256,56 @@ const WIZARDS = {
     {
       id: 'supplier',
       title: 'Поставщик',
-      sub: '// от кого груз',
+      sub: '// источник груза или топлива',
       type: 'input_text',
       field: 'supplier',
-      required: true,
-      label: 'Поставщик'
+      required: false,
+      label: 'Имя / название'
     },
     {
       id: 'carrier',
       title: 'Перевозчик',
-      sub: '// кто повёз',
+      sub: '// кто везёт',
       type: 'input_text',
       field: 'carrier',
       required: true,
-      label: 'Перевозчик'
+      label: 'Имя / название'
     },
     {
       id: 'volume',
       title: 'Объём',
-      sub: '// литры / объём перевозки',
+      sub: '// м³ или тонны',
       type: 'input_number',
       field: 'volume',
       required: true,
-      label: 'Объём'
+      label: 'Объём (м³/т)'
     },
     {
       id: 'client_sum',
-      title: 'Сумма от клиента',
-      sub: '// сколько платит клиент',
+      title: 'Цена клиенту',
+      sub: '// за литр',
       type: 'input_number',
       field: 'client_sum',
       required: true,
-      label: 'Сумма от клиента (₽)'
+      label: 'Цена клиенту (₽/л)'
     },
     {
       id: 'fuel_cost',
-      title: 'Топливо',
-      sub: '// расход на топливо',
+      title: 'Цена поставщику',
+      sub: '// за литр, необязательно',
       type: 'input_number',
       field: 'fuel_cost',
-      required: true,
-      label: 'Топливо (₽)'
+      required: false,
+      label: 'Цена поставщику (₽/л)'
     },
     {
       id: 'carrier_cost',
       title: 'Цена перевозчику',
-      sub: '// стоимость перевозки',
+      sub: '// за литр',
       type: 'input_number',
       field: 'carrier_cost',
       required: true,
-      label: 'Цена перевозчику (₽)'
+      label: 'Цена перевозчику (₽/л)'
     },
     {
       id: 'comment',
@@ -536,8 +313,7 @@ const WIZARDS = {
       sub: '// необязательно',
       type: 'textarea',
       field: 'comment',
-      required: false,
-      label: 'Комментарий'
+      required: false
     }
   ],
 
@@ -566,8 +342,7 @@ const WIZARDS = {
       sub: '// необязательно',
       type: 'textarea',
       field: 'comment',
-      required: false,
-      label: 'Комментарий'
+      required: false
     }
   ],
 
@@ -579,8 +354,7 @@ const WIZARDS = {
       type: 'chips',
       field: 'article',
       options: () => ARTICLES,
-      required: true,
-      label: 'Статья расхода'
+      required: true
     },
     {
       id: 'amount',
@@ -597,8 +371,7 @@ const WIZARDS = {
       sub: '// необязательно',
       type: 'textarea',
       field: 'comment',
-      required: false,
-      label: 'Комментарий'
+      required: false
     }
   ],
 
@@ -627,8 +400,7 @@ const WIZARDS = {
       sub: '// необязательно',
       type: 'textarea',
       field: 'comment',
-      required: false,
-      label: 'Комментарий'
+      required: false
     }
   ]
 };
@@ -646,314 +418,253 @@ let currentStep = 0;
 let data = {};
 let debtBalances = {};
 
-const stepsContainer = document.getElementById('steps-container');
+const container = document.getElementById('steps-container');
 const progressFill = document.getElementById('progress-fill');
 const progressSection = document.getElementById('progress-section');
 const progressCount = document.getElementById('progress-count');
 const btnBack = document.getElementById('btn-back');
 const btnNext = document.getElementById('btn-next');
 const btnNextText = document.getElementById('btn-next-text');
-const btnRow = document.getElementById('btn-row');
-const doneScreen = document.getElementById('done-screen');
-const doneMsg = document.getElementById('done-msg');
-const loading = document.getElementById('loading');
 
-window.onerror = function(msg, src, line, col) {
-  renderFatalError(`JS ошибка: ${msg} (${line}:${col})`);
-};
-
-function escapeHtml(value) {
-  return String(value ?? '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
+function escapeHtml(v){
+  return String(v ?? '')
+    .replaceAll('&','&amp;')
+    .replaceAll('<','&lt;')
+    .replaceAll('>','&gt;')
+    .replaceAll('"','&quot;')
     .replaceAll("'", '&#039;');
 }
 
-function escapeJsString(value) {
-  return String(value ?? '')
-    .replaceAll('\\', '\\\\')
-    .replaceAll("'", "\\'")
-    .replaceAll('\n', '\\n')
-    .replaceAll('\r', '');
-}
-
-function renderFatalError(message) {
-  btnRow.style.display = 'none';
-  stepsContainer.innerHTML = `
-    <div class="step-card">
+function renderFatalError(msg){
+  container.innerHTML = `
+    <div class="step active">
       <div class="step-title">Ошибка</div>
-      <div class="step-sub">${escapeHtml(message)}</div>
+      <div class="step-sub">${escapeHtml(msg)}</div>
     </div>
   `;
 }
 
-function getWizard() {
-  const wizard = WIZARDS[SECTION];
-  if (!wizard || !Array.isArray(wizard)) return null;
-  return wizard;
+window.onerror = function(msg, src, line, col){
+  renderFatalError(`JS ошибка: ${msg} (${line}:${col})`);
+};
+
+function getWizard(){
+  return Array.isArray(WIZARDS[SECTION]) ? WIZARDS[SECTION] : null;
 }
 
-function getActiveSteps() {
+function getActiveSteps(){
   const wizard = getWizard();
-  if (!wizard) return [];
-  return wizard.filter(step => !step.condition || step.condition(data));
+  return wizard ? wizard.filter(s => !s.condition || s.condition(data)) : [];
 }
 
-async function fetchDebts() {
-  try {
-    const response = await fetch('/api/debts', { credentials: 'same-origin' });
-    const result = await response.json();
-    if (result && !result.error) {
-      debtBalances = result;
-    } else {
-      debtBalances = {};
-    }
-  } catch (e) {
+async function fetchDebts(){
+  try{
+    const r = await fetch('/api/debts', { credentials: 'same-origin' });
+    const j = await r.json();
+    debtBalances = (j && !j.error) ? j : {};
+  } catch(e){
     debtBalances = {};
   }
 }
 
-function getCurrentStep() {
-  return steps[currentStep] || null;
-}
-
-function updateProgress() {
-  if (!steps.length) {
+function updateProgress(){
+  if(!steps.length){
     progressFill.style.width = '0%';
     progressCount.textContent = '—';
     return;
   }
-
-  const pct = steps.length === 1 ? 100 : (currentStep / (steps.length - 1)) * 100;
-  progressFill.style.width = `${pct}%`;
+  const pct = steps.length > 1 ? (currentStep / (steps.length - 1)) * 100 : 100;
+  progressFill.style.width = pct + '%';
   progressCount.textContent = `${currentStep + 1} / ${steps.length}`;
 }
 
-function updateButtons() {
-  const isFirst = currentStep === 0;
-  const isLast = currentStep === steps.length - 1;
-
-  btnBack.style.display = isFirst ? 'none' : 'block';
-  btnNextText.textContent = isLast ? 'Записать ✓' : 'Далее →';
+function updateButtons(){
+  btnBack.style.display = currentStep === 0 ? 'none' : 'flex';
+  btnNextText.textContent = currentStep === steps.length - 1 ? 'Записать ✓' : 'Далее →';
 }
 
-function buildChips(step, currentVal) {
-  const options = typeof step.options === 'function' ? step.options() : [];
-  if (!options.length) {
-    return `<div class="empty-state">Нет доступных вариантов</div>`;
+function showError(msg){
+  const el = document.getElementById('step-error');
+  if(el){
+    el.textContent = '⚠ ' + msg;
+    el.classList.add('show');
   }
-
-  return `
-    <label>${escapeHtml(step.label || 'Выберите')}</label>
-    <div class="chips">
-      ${options.map(option => `
-        <div
-          class="chip ${currentVal === option ? 'selected' : ''}"
-          data-value="${escapeHtml(option)}"
-          onclick="selectChip(this, '${escapeJsString(option)}', '${escapeJsString(step.field)}')"
-        >
-          ${escapeHtml(option)}
-        </div>
-      `).join('')}
-    </div>
-    <input type="hidden" id="step-input" value="${escapeHtml(currentVal)}">
-  `;
 }
 
-function buildDebtList(step, currentVal) {
-  const entries = Object.entries(debtBalances)
-    .filter(([, amount]) => Number(amount) > 0)
-    .sort((a, b) => String(a[0]).localeCompare(String(b[0]), 'ru'));
+function clearError(){
+  const el = document.getElementById('step-error');
+  if(el) el.classList.remove('show');
+}
 
+function buildChips(step, currentVal){
+  const opts = typeof step.options === 'function' ? step.options() : [];
   return `
-    <label>${escapeHtml(step.label || 'Должник')}</label>
-    ${entries.length ? `
-      <div class="debt-list">
-        ${entries.map(([name, amount]) => `
-          <div
-            class="debt-item ${currentVal === name ? 'selected' : ''}"
-            onclick="selectDebt(this, '${escapeJsString(name)}')"
-          >
-            <div class="debt-name">${escapeHtml(name)}</div>
-            <div class="debt-sum">Долг: ${escapeHtml(Number(amount).toFixed(2))} ₽</div>
+    <div class="field">
+      <label>${escapeHtml(step.label || 'Выберите')}</label>
+      <div class="chips">
+        ${opts.map((o, i) => `
+          <div class="chip ${currentVal === o ? 'selected' : ''}" data-idx="${i}">
+            ${escapeHtml(o)}
           </div>
         `).join('')}
       </div>
-    ` : `
-      <div class="empty-state">Нет активных долгов. Можно ввести имя вручную.</div>
-    `}
-    <input
-      type="text"
-      id="step-input"
-      placeholder="Введите имя должника"
-      value="${escapeHtml(currentVal)}"
-      oninput="data['${escapeJsString(step.field)}']=this.value"
-    >
+    </div>
   `;
 }
 
-function buildTextInput(step, currentVal) {
+function buildDebtList(step, currentVal){
+  const debtors = Object.entries(debtBalances).sort((a, b) => Number(b[1]) - Number(a[1]));
+  const listHtml = debtors.length
+    ? debtors.map(([name, amt]) => `
+        <div class="debt-item ${currentVal === name ? 'selected' : ''}" data-name="${escapeHtml(name)}">
+          <span class="name">${escapeHtml(name)}</span>
+          <span class="amount">${Number(amt).toLocaleString('ru')} ₽</span>
+        </div>
+      `).join('')
+    : `<div class="empty-state">Активных долгов нет</div>`;
+
   return `
-    <label>${escapeHtml(step.label || 'Текст')}${step.required ? ' *' : ''}</label>
-    <input
-      type="text"
-      id="step-input"
-      placeholder="${escapeHtml(step.label || '')}"
-      value="${escapeHtml(currentVal)}"
-      oninput="data['${escapeJsString(step.field)}']=this.value"
-      autocomplete="off"
-    >
+    <div class="field">
+      <label>${escapeHtml(step.label || 'Должник')}</label>
+      <div class="debt-list">${listHtml}</div>
+      <div style="margin-top:14px">
+        <label>Или введите вручную</label>
+        <input type="text" id="step-input" value="${escapeHtml(currentVal)}" placeholder="Имя должника">
+      </div>
+    </div>
   `;
 }
 
-function buildNumberInput(step, currentVal) {
-  const intOnly = typeof step.intOnly === 'function' ? !!step.intOnly(data) : false;
+function buildTextInput(step, currentVal){
   return `
-    <label>${escapeHtml(step.label || 'Число')}${step.required ? ' *' : ''}</label>
-    <input
-      type="number"
-      id="step-input"
-      step="${intOnly ? '1' : 'any'}"
-      min="0"
-      placeholder="${intOnly ? '0' : '0.00'}"
-      value="${escapeHtml(currentVal)}"
-      oninput="data['${escapeJsString(step.field)}']=this.value"
-      inputmode="decimal"
-    >
+    <div class="field">
+      <label>${escapeHtml(step.label || 'Текст')}${step.required ? ' *' : ''}</label>
+      <input type="text" id="step-input" value="${escapeHtml(currentVal)}">
+    </div>
   `;
 }
 
-function buildTextarea(step, currentVal) {
+function buildNumberInput(step, currentVal){
+  const isInt = step.intOnly && step.intOnly(data);
+  const label = step.labelFn ? step.labelFn(data) : (step.label || 'Значение');
   return `
-    <label>${escapeHtml(step.label || 'Комментарий')}${step.required ? ' *' : ''}</label>
-    <textarea
-      id="step-input"
-      placeholder="${step.required ? '' : 'Необязательно'}"
-      oninput="data['${escapeJsString(step.field)}']=this.value"
-    >${escapeHtml(currentVal)}</textarea>
-    ${step.hint ? `<div class="hint">💡 ${escapeHtml(step.hint)}</div>` : ''}
+    <div class="field">
+      <label>${escapeHtml(label)}${step.required ? ' *' : ''}</label>
+      <input type="number" id="step-input" step="${isInt ? '1' : 'any'}" min="0" value="${escapeHtml(currentVal)}">
+    </div>
   `;
 }
 
-function renderStep(index) {
+function buildTextarea(step, currentVal){
+  return `
+    <div class="field">
+      <label>${escapeHtml(step.label || 'Комментарий')}</label>
+      <textarea id="step-input">${escapeHtml(currentVal)}</textarea>
+      ${step.hint ? `<div class="hint">${escapeHtml(step.hint)}</div>` : ''}
+    </div>
+  `;
+}
+
+function attachEvents(step){
+  const input = document.getElementById('step-input');
+
+  if(input){
+    input.addEventListener('input', () => {
+      data[step.field] = input.value;
+    });
+  }
+
+  if(step.type === 'chips'){
+    const opts = typeof step.options === 'function' ? step.options() : [];
+    document.querySelectorAll('.chip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        document.querySelectorAll('.chip').forEach(c => c.classList.remove('selected'));
+        chip.classList.add('selected');
+        const value = opts[Number(chip.dataset.idx)];
+        data[step.field] = value;
+      });
+    });
+  }
+
+  if(step.type === 'debt_list'){
+    document.querySelectorAll('.debt-item').forEach(item => {
+      item.addEventListener('click', () => {
+        document.querySelectorAll('.debt-item').forEach(d => d.classList.remove('selected'));
+        item.classList.add('selected');
+        const value = item.dataset.name || '';
+        data[step.field] = value;
+        const inp = document.getElementById('step-input');
+        if(inp) inp.value = value;
+      });
+    });
+  }
+
+  setTimeout(() => {
+    if(input && input.type !== 'hidden'){
+      input.focus();
+      if(input.value && input.select) input.select();
+    }
+  }, 200);
+}
+
+function renderStep(index){
   steps = getActiveSteps();
 
-  if (!steps.length) {
-    renderFatalError(`Шаги не найдены для секции: ${SECTION}`);
+  if(!steps.length){
+    renderFatalError(`Нет шагов для секции: ${SECTION}`);
     return;
   }
 
   currentStep = Math.max(0, Math.min(index, steps.length - 1));
-  const step = getCurrentStep();
+  const step = steps[currentStep];
 
-  if (!step) {
-    renderFatalError('Не удалось определить текущий шаг');
-    return;
-  }
-
-  progressSection.textContent = SECTION_NAMES[SECTION] || SECTION;
   updateProgress();
   updateButtons();
+  progressSection.textContent = SECTION_NAMES[SECTION] || SECTION;
 
-  const currentVal = data[step.field] ?? '';
-  let fieldHtml = '';
+  const currentVal = data[step.field] || '';
+  let inputHTML = '';
 
-  if (step.type === 'chips') {
-    fieldHtml = buildChips(step, currentVal);
-  } else if (step.type === 'debt_list') {
-    fieldHtml = buildDebtList(step, currentVal);
-  } else if (step.type === 'input_text') {
-    fieldHtml = buildTextInput(step, currentVal);
-  } else if (step.type === 'input_number') {
-    fieldHtml = buildNumberInput(step, currentVal);
-  } else if (step.type === 'textarea') {
-    fieldHtml = buildTextarea(step, currentVal);
-  } else {
-    fieldHtml = `<div class="empty-state">Неизвестный тип шага: ${escapeHtml(step.type)}</div>`;
+  if(step.type === 'chips') inputHTML = buildChips(step, currentVal);
+  else if(step.type === 'debt_list') inputHTML = buildDebtList(step, currentVal);
+  else if(step.type === 'input_text') inputHTML = buildTextInput(step, currentVal);
+  else if(step.type === 'input_number') inputHTML = buildNumberInput(step, currentVal);
+  else if(step.type === 'textarea') inputHTML = buildTextarea(step, currentVal);
+
+  const old = container.querySelector('.step.active');
+  if(old){
+    old.classList.remove('active');
+    old.classList.add('exit-left');
+    setTimeout(() => old.remove(), 250);
   }
 
-  stepsContainer.innerHTML = `
-    <div class="step-card">
-      <div class="step-kicker">// шаг ${currentStep + 1}</div>
-      <div class="step-title">${escapeHtml(step.title || 'Шаг')}</div>
-      <div class="step-sub">${escapeHtml(step.sub || '')}</div>
-      <div class="step-error" id="step-error"></div>
-      ${fieldHtml}
-    </div>
+  const div = document.createElement('div');
+  div.className = 'step active';
+  div.innerHTML = `
+    <div class="step-title">${escapeHtml(step.title)}</div>
+    <div class="step-sub">${escapeHtml(step.sub)}</div>
+    <div class="step-error" id="step-error"></div>
+    ${inputHTML}
   `;
+  container.appendChild(div);
 
-  setTimeout(() => {
-    const input = document.getElementById('step-input');
-    if (input && input.type !== 'hidden' && typeof input.focus === 'function') {
-      input.focus();
-      if (input.tagName === 'INPUT' && input.type !== 'number') {
-        try {
-          input.setSelectionRange(input.value.length, input.value.length);
-        } catch (e) {}
-      }
-    }
-  }, 0);
+  attachEvents(step);
 }
 
-function selectChip(el, value, field) {
-  document.querySelectorAll('.chip').forEach(node => node.classList.remove('selected'));
-  el.classList.add('selected');
-  data[field] = value;
+function validate(){
+  const step = steps[currentStep];
+  const val = data[step.field];
 
-  const hiddenInput = document.getElementById('step-input');
-  if (hiddenInput) hiddenInput.value = value;
-}
+  if(!step.required) return true;
 
-function selectDebt(el, name) {
-  document.querySelectorAll('.debt-item').forEach(node => node.classList.remove('selected'));
-  el.classList.add('selected');
-  data.debtor = name;
-
-  const input = document.getElementById('step-input');
-  if (input) input.value = name;
-}
-
-function showError(message) {
-  const box = document.getElementById('step-error');
-  if (!box) return;
-  box.textContent = '⚠ ' + message;
-  box.classList.add('show');
-}
-
-function clearError() {
-  const box = document.getElementById('step-error');
-  if (!box) return;
-  box.textContent = '';
-  box.classList.remove('show');
-}
-
-function syncCurrentInputToData() {
-  const step = getCurrentStep();
-  const input = document.getElementById('step-input');
-  if (!step || !input) return;
-
-  if (input.value !== undefined) {
-    data[step.field] = input.value;
-  }
-}
-
-function validateStep() {
-  const step = getCurrentStep();
-  if (!step) return false;
-
-  const rawValue = data[step.field];
-  const value = typeof rawValue === 'string' ? rawValue.trim() : rawValue;
-
-  if (step.required && (value === undefined || value === null || value === '')) {
+  if(val === undefined || val === null || String(val).trim() === ''){
     showError('Заполните это поле');
     return false;
   }
 
-  if (step.type === 'input_number' && value !== undefined && value !== null && value !== '') {
-    const normalized = String(value).replace(',', '.');
-    if (Number.isNaN(parseFloat(normalized))) {
+  if(step.type === 'input_number'){
+    const parsed = parseFloat(String(val).replace(',', '.'));
+    if(Number.isNaN(parsed)){
       showError('Введите число');
       return false;
     }
@@ -962,105 +673,88 @@ function validateStep() {
   return true;
 }
 
-async function goNext() {
-  clearError();
-  syncCurrentInputToData();
+async function submitData(){
+  document.getElementById('loading').classList.add('show');
 
-  if (!validateStep()) return;
-
-  const isLast = currentStep === steps.length - 1;
-
-  if (isLast) {
-    await submitData();
-    return;
-  }
-
-  renderStep(currentStep + 1);
-}
-
-function goBack() {
-  clearError();
-
-  if (currentStep === 0) {
-    location.href = '/menu';
-    return;
-  }
-
-  renderStep(currentStep - 1);
-}
-
-async function submitData() {
-  loading.classList.add('show');
-
-  try {
-    const response = await fetch('/api/wizard/save', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'same-origin',
-      body: JSON.stringify({
-        section: SECTION,
-        data: data
-      })
+  try{
+    const resp = await fetch('/api/wizard/save', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      credentials:'same-origin',
+      body:JSON.stringify({ section: SECTION, data: data })
     });
 
-    const result = await response.json();
-    loading.classList.remove('show');
+    const result = await resp.json();
+    document.getElementById('loading').classList.remove('show');
 
-    if (!response.ok || !result.ok) {
+    if(result.ok){
+      document.getElementById('done-msg').textContent = result.message || 'Успешно сохранено';
+      document.getElementById('done-screen').classList.add('show');
+    } else {
       showError(result.error || 'Ошибка сохранения');
-      return;
     }
-
-    doneMsg.textContent = result.message || 'Успешно сохранено';
-    doneScreen.classList.add('show');
-    stepsContainer.style.display = 'none';
-    btnRow.style.display = 'none';
-  } catch (e) {
-    loading.classList.remove('show');
+  } catch(e){
+    document.getElementById('loading').classList.remove('show');
     showError('Ошибка сети: ' + e.message);
   }
 }
 
-async function init() {
-  const wizard = getWizard();
+async function goNext(){
+  clearError();
 
-  if (!wizard) {
-    renderFatalError(`Неизвестная секция: ${SECTION}`);
+  const step = steps[currentStep];
+  const input = document.getElementById('step-input');
+  if(input && step && input.value !== undefined){
+    data[step.field] = input.value;
+  }
+
+  if(!validate()) return;
+
+  if(currentStep === steps.length - 1){
+    await submitData();
+  } else {
+    renderStep(currentStep + 1);
+  }
+}
+
+function goBack(){
+  clearError();
+  if(currentStep === 0){
+    location.href = '/menu';
     return;
   }
-
-  progressSection.textContent = SECTION_NAMES[SECTION] || SECTION;
-
-  if (SECTION === 'debt_payment') {
-    await fetchDebts();
-  }
-
-  steps = getActiveSteps();
-
-  if (!steps.length) {
-    renderFatalError(`Нет шагов для секции: ${SECTION}`);
-    return;
-  }
-
-  renderStep(0);
+  renderStep(currentStep - 1);
 }
 
 btnBack.addEventListener('click', goBack);
 btnNext.addEventListener('click', goNext);
 
 document.addEventListener('keydown', (e) => {
-  if (e.key !== 'Enter' || e.shiftKey) return;
-
-  const step = getCurrentStep();
-  if (!step) return;
-
-  if (step.type === 'textarea') return;
-
-  e.preventDefault();
-  goNext();
+  if(e.key === 'Enter' && !e.shiftKey){
+    const step = steps[currentStep];
+    if(step && step.type !== 'textarea'){
+      e.preventDefault();
+      goNext();
+    }
+  }
 });
 
-init();
+(async function init(){
+  const wizard = getWizard();
+  if(!wizard){
+    renderFatalError(`Неизвестная секция: ${SECTION}`);
+    return;
+  }
+
+  progressSection.textContent = SECTION_NAMES[SECTION] || SECTION;
+
+  if(SECTION === 'debt_payment'){
+    await fetchDebts();
+  }
+
+  steps = getActiveSteps();
+  renderStep(0);
+})();
 </script>
 </body>
 </html>

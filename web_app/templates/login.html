@@ -8,14 +8,14 @@
 <style>
 :root {
   --bg:#0c0c0c; --surface:#151515; --surface2:#1c1c1c;
-  --border:#252525; --accent:#e8b84b; --accent2:#c94f1e;
+  --border:#252525; --accent:#CCE01F; --accent2:#c94f1e;
   --text:#e4e4e4; --muted:#606060;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--text);font-family:'IBM Plex Sans',sans-serif;
   min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
 body::before{content:'';position:fixed;inset:0;pointer-events:none;
-  background:radial-gradient(ellipse 70% 40% at 50% 0%,rgba(232,184,75,.07) 0%,transparent 70%)}
+  background:radial-gradient(ellipse 70% 40% at 50% 0%,rgba(204,224,31,.08) 0%,transparent 70%)}
 
 .wrap{width:100%;max-width:340px;position:relative;z-index:1}
 
@@ -41,8 +41,8 @@ input:focus{border-color:var(--accent)}
 
 .btn{width:100%;padding:14px;background:var(--accent);color:#0c0c0c;border:none;
   font-family:'Oswald',sans-serif;font-size:17px;font-weight:600;letter-spacing:.1em;
-  text-transform:uppercase;cursor:pointer;transition:background .15s;margin-top:4px}
-.btn:hover{background:#f5c85a}
+  text-transform:uppercase;cursor:pointer;transition:filter .15s;margin-top:4px}
+.btn:hover{filter:brightness(1.06)}
 .btn:active{transform:scale(.99)}
 
 footer{text-align:center;margin-top:24px;font-family:'IBM Plex Mono',monospace;

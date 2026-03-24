@@ -7,7 +7,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;600;700&family=IBM+Plex+Mono:wght@400&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet">
 <style>
 :root{--bg:#0c0c0c;--surface:#151515;--surface2:#1c1c1c;--border:#252525;
-  --accent:#e8b84b;--text:#e4e4e4;--muted:#606060}
+  --accent:#CCE01F;--text:#e4e4e4;--muted:#606060}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--text);font-family:'IBM Plex Sans',sans-serif;min-height:100vh}
 
@@ -64,30 +64,34 @@ h1{font-family:'Oswald',sans-serif;font-size:26px;font-weight:600;
   <div class="greeting">// добро пожаловать</div>
   <h1>Что записать?</h1>
   <div class="grid">
-    <a href="/wizard/auto" class="menu-btn" style="--btn-color:#e8b84b">
+    <a href="/wizard/auto" class="menu-btn" style="--btn-color:#CCE01F">
       <div class="btn-icon">🚛</div>
       <div class="btn-label">Автопарк</div>
       <div class="btn-desc">расходы / рейсы</div>
     </a>
+
     <a href="/wizard/hire" class="menu-btn" style="--btn-color:#5b8cf5">
       <div class="btn-icon">📦</div>
       <div class="btn-label">Найм</div>
       <div class="btn-desc">перевозка</div>
     </a>
+
     <a href="/wizard/income" class="menu-btn" style="--btn-color:#3a9a5c">
       <div class="btn-icon">💰</div>
       <div class="btn-label">Доходы</div>
       <div class="btn-desc">входящие</div>
     </a>
+
     <a href="/wizard/expenses" class="menu-btn" style="--btn-color:#c94f1e">
       <div class="btn-icon">🧾</div>
       <div class="btn-label">Расходы</div>
       <div class="btn-desc">статьи затрат</div>
     </a>
-    <a href="/wizard/debt_payment" class="menu-btn item-full" style="--btn-color:#9b6af5">
-      <div class="btn-icon">💸</div>
-      <div class="btn-label">Записать оплату долга</div>
-      <div class="btn-desc">учёт дебиторки</div>
+
+    <a href="/history" class="menu-btn item-full" style="--btn-color:#7de2d1">
+      <div class="btn-icon">🕘</div>
+      <div class="btn-label">История записей</div>
+      <div class="btn-desc">кто, что и когда записал</div>
     </a>
   </div>
 </div>

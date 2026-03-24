@@ -1,47 +1,41 @@
 # -*- coding: utf-8 -*-
 import os
 import re
+import json
 import logging
 from datetime import datetime, timedelta
 from functools import wraps
 
-from flask import Flask, render_template, request, redirect, url_for, session, jsonify
-from dotenv import load_dotenv
+import requests
 import gspread
+from dotenv import load_dotenv
+from flask import Flask, render_template, request, redirect, url_for, session, jsonify
 from oauth2client.service_account import ServiceAccountCredentials
 
 load_dotenv()
 
 app = Flask(__name__)
-app.secret_key = os.getenv("FLASK_SECRET_KEY", "change-me-very-soon")
+app.secret_key = os.getenv("FLASK_SECRET_KEY", "change-me-now")
 
-APP_PASSWORD = os.getenv("WEB_APP_PASSWORD", "change-me-very-soon")
+APP_PASSWORD = os.getenv("WEB_APP_PASSWORD", "change-me-now")
 
-# Новый вариант:
-# 1) сначала берем логистическую таблицу
-# 2) если ее нет, берем старый SHEET_URL для совместимости
 SHEET_URL = os.getenv("SHEET_URL_LOGISTICS") or os.getenv("SHEET_URL")
-
-# Путь к json-ключу:
-# можно явно задать GOOGLE_SERVICE_ACCOUNT_FILE в .env,
-# а если не задано — берем finance-key.json в корне проекта
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 GOOGLE_SERVICE_ACCOUNT_FILE = os.getenv(
     "GOOGLE_SERVICE_ACCOUNT_FILE",
     os.path.join(BASE_DIR, "finance-key.json")
 )
 
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_ADMIN_CHAT_ID = os.getenv("TELEGRAM_ADMIN_CHAT_ID", "")
+
 logging.basicConfig(level=logging.INFO)
 
 if not SHEET_URL:
-    raise ValueError(
-        "Не задан SHEET_URL_LOGISTICS или SHEET_URL в .env"
-    )
+    raise ValueError("Не задан SHEET_URL_LOGISTICS или SHEET_URL в .env")
 
 if not os.path.exists(GOOGLE_SERVICE_ACCOUNT_FILE):
-    raise FileNotFoundError(
-        f"Файл ключа Google не найден: {GOOGLE_SERVICE_ACCOUNT_FILE}"
-    )
+    raise FileNotFoundError(f"Файл ключа Google не найден: {GOOGLE_SERVICE_ACCOUNT_FILE}")
 
 scope = [
     "https://spreadsheets.google.com/feeds",
@@ -87,6 +81,61 @@ AUTO_FIELDS = [
 ]
 
 
+def get_or_create_worksheet(title: str, rows: int = 1000, cols: int = 20):
+    try:
+        return sh.worksheet(title)
+    except gspread.WorksheetNotFound:
+        return sh.add_worksheet(title=title, rows=rows, cols=cols)
+
+
+def ensure_history_sheet():
+    ws = get_or_create_worksheet("История", rows=3000, cols=10)
+    first_row = ws.row_values(1)
+    if not first_row:
+        ws.append_row([
+            "Дата",
+            "Время",
+            "Пользователь",
+            "Раздел",
+            "Данные_JSON",
+            "Комментарий"
+        ])
+    return ws
+
+
+def notify_telegram(text: str):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_ADMIN_CHAT_ID:
+        return
+
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={
+                "chat_id": TELEGRAM_ADMIN_CHAT_ID,
+                "text": text
+            },
+            timeout=10
+        )
+    except Exception as e:
+        logging.error(f"Ошибка отправки TG уведомления: {e}")
+
+
+def log_history(section: str, data: dict, username: str):
+    try:
+        ws = ensure_history_sheet()
+        now = datetime.now() + timedelta(hours=6)
+        ws.append_row([
+            now.strftime("%d/%m/%Y"),
+            now.strftime("%H:%M:%S"),
+            username,
+            section,
+            json.dumps(data, ensure_ascii=False),
+            data.get("comment", "")
+        ], value_input_option="USER_ENTERED")
+    except Exception as e:
+        logging.error(f"Ошибка записи в Историю: {e}")
+
+
 def load_reference_data():
     global MACHINES, COMMON_ARTICLES
     try:
@@ -104,6 +153,16 @@ def now_str():
 def parse_debt_comment(comment):
     match = re.search(r'долг\s+"([^"]+)"', comment, re.IGNORECASE)
     return match.group(1).strip() if match else None
+
+
+def format_tg_message(username: str, section: str, data: dict, result_text: str) -> str:
+    return (
+        f"🆕 Новая запись\n\n"
+        f"👤 Пользователь: {username}\n"
+        f"📂 Раздел: {section}\n"
+        f"✅ Результат: {result_text}\n"
+        f"📝 Данные: {json.dumps(data, ensure_ascii=False)}"
+    )
 
 
 def login_required(f):
@@ -147,6 +206,24 @@ def menu():
     return render_template("menu.html", username=session.get("username"))
 
 
+@app.route("/history")
+@login_required
+def history():
+    try:
+        ws = ensure_history_sheet()
+        rows = ws.get_all_records()
+        rows = list(reversed(rows))
+    except Exception as e:
+        logging.error(f"Ошибка чтения Истории: {e}")
+        rows = []
+
+    return render_template(
+        "history.html",
+        username=session.get("username"),
+        rows=rows
+    )
+
+
 @app.route("/wizard/<section>")
 @login_required
 def wizard(section):
@@ -167,9 +244,12 @@ def wizard_save():
     payload = request.get_json()
     section = payload.get("section")
     data = payload.get("data", {})
+    username = session.get("username", "Веб")
 
     try:
         result = save_to_sheets(section, data)
+        log_history(section, data, username)
+        notify_telegram(format_tg_message(username, section, data, result))
         return jsonify({"ok": True, "message": result})
     except Exception as e:
         logging.error(f"Ошибка сохранения {section}: {e}")
@@ -325,4 +405,5 @@ def api_debts():
 
 if __name__ == "__main__":
     load_reference_data()
+    ensure_history_sheet()
     app.run(host="0.0.0.0", port=5001, debug=False)
