@@ -412,13 +412,6 @@ textarea{
 <div id="loading"><div class="spinner"></div></div>
 
 <script>
-const SECTION = {{ section | tojson }};
-const MACHINES = {{ machines | tojson }};
-const AUTO_FIELDS = {{ auto_fields | tojson }};
-const ARTICLES = {{ articles | tojson }};
-</script>
-
-<script>
 const WIZARDS = {
   auto: [
     {
@@ -678,6 +671,14 @@ function escapeHtml(value) {
     .replaceAll("'", '&#039;');
 }
 
+function escapeJsString(value) {
+  return String(value ?? '')
+    .replaceAll('\\', '\\\\')
+    .replaceAll("'", "\\'")
+    .replaceAll('\n', '\\n')
+    .replaceAll('\r', '');
+}
+
 function renderFatalError(message) {
   btnRow.style.display = 'none';
   stepsContainer.innerHTML = `
@@ -751,7 +752,7 @@ function buildChips(step, currentVal) {
         <div
           class="chip ${currentVal === option ? 'selected' : ''}"
           data-value="${escapeHtml(option)}"
-          onclick="selectChip(this, ${JSON.stringify(option)}, ${JSON.stringify(step.field)})"
+          onclick="selectChip(this, '${escapeJsString(option)}', '${escapeJsString(step.field)}')"
         >
           ${escapeHtml(option)}
         </div>
@@ -773,7 +774,7 @@ function buildDebtList(step, currentVal) {
         ${entries.map(([name, amount]) => `
           <div
             class="debt-item ${currentVal === name ? 'selected' : ''}"
-            onclick="selectDebt(this, ${JSON.stringify(name)})"
+            onclick="selectDebt(this, '${escapeJsString(name)}')"
           >
             <div class="debt-name">${escapeHtml(name)}</div>
             <div class="debt-sum">Долг: ${escapeHtml(Number(amount).toFixed(2))} ₽</div>
@@ -788,7 +789,7 @@ function buildDebtList(step, currentVal) {
       id="step-input"
       placeholder="Введите имя должника"
       value="${escapeHtml(currentVal)}"
-      oninput="data[${JSON.stringify(step.field)}]=this.value"
+      oninput="data['${escapeJsString(step.field)}']=this.value"
     >
   `;
 }
@@ -801,7 +802,7 @@ function buildTextInput(step, currentVal) {
       id="step-input"
       placeholder="${escapeHtml(step.label || '')}"
       value="${escapeHtml(currentVal)}"
-      oninput="data[${JSON.stringify(step.field)}]=this.value"
+      oninput="data['${escapeJsString(step.field)}']=this.value"
       autocomplete="off"
     >
   `;
@@ -818,7 +819,7 @@ function buildNumberInput(step, currentVal) {
       min="0"
       placeholder="${intOnly ? '0' : '0.00'}"
       value="${escapeHtml(currentVal)}"
-      oninput="data[${JSON.stringify(step.field)}]=this.value"
+      oninput="data['${escapeJsString(step.field)}']=this.value"
       inputmode="decimal"
     >
   `;
@@ -830,7 +831,7 @@ function buildTextarea(step, currentVal) {
     <textarea
       id="step-input"
       placeholder="${step.required ? '' : 'Необязательно'}"
-      oninput="data[${JSON.stringify(step.field)}]=this.value"
+      oninput="data['${escapeJsString(step.field)}']=this.value"
     >${escapeHtml(currentVal)}</textarea>
     ${step.hint ? `<div class="hint">💡 ${escapeHtml(step.hint)}</div>` : ''}
   `;
