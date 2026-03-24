@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Меню — DizelTrade</title>
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;600;700&family=IBM+Plex+Mono:wght@400&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#0c0c0c;--surface:#151515;--surface2:#1c1c1c;--border:#252525;
+  --accent:#e8b84b;--text:#e4e4e4;--muted:#606060}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:'IBM Plex Sans',sans-serif;min-height:100vh}
+
+header{background:var(--surface);border-bottom:2px solid var(--accent);
+  padding:0 16px;position:sticky;top:0;z-index:50}
+.header-inner{max-width:480px;margin:0 auto;display:flex;align-items:center;
+  justify-content:space-between;height:50px}
+.logo{font-family:'Oswald',sans-serif;font-size:19px;font-weight:700;
+  letter-spacing:.08em;color:var(--accent);text-transform:uppercase;text-decoration:none}
+.logo span{color:var(--muted);font-weight:400}
+.user-info{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--muted);
+  display:flex;align-items:center;gap:10px}
+.logout{color:var(--muted);text-decoration:none;font-size:11px;
+  border:1px solid var(--border);padding:4px 10px;transition:all .15s}
+.logout:hover{color:var(--accent);border-color:var(--accent)}
+
+.page{max-width:480px;margin:0 auto;padding:24px 16px 60px}
+
+.greeting{font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--muted);margin-bottom:4px}
+h1{font-family:'Oswald',sans-serif;font-size:26px;font-weight:600;
+  text-transform:uppercase;letter-spacing:.04em;margin-bottom:24px}
+
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.item-full{grid-column:1/-1}
+
+.menu-btn{display:flex;flex-direction:column;align-items:flex-start;
+  padding:18px 16px;background:var(--surface);border:1px solid var(--border);
+  text-decoration:none;color:var(--text);transition:all .15s;position:relative;
+  overflow:hidden;cursor:pointer}
+.menu-btn::before{content:'';position:absolute;left:0;top:0;bottom:0;
+  width:3px;background:var(--btn-color,var(--accent));
+  transform:scaleY(0);transform-origin:bottom;transition:transform .2s}
+.menu-btn:hover{background:var(--surface2);border-color:var(--btn-color,var(--border))}
+.menu-btn:hover::before{transform:scaleY(1)}
+.menu-btn:active{transform:scale(.98)}
+
+.btn-icon{font-size:24px;margin-bottom:10px;line-height:1}
+.btn-label{font-family:'Oswald',sans-serif;font-size:15px;font-weight:500;
+  letter-spacing:.04em;text-transform:uppercase}
+.btn-desc{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--muted);margin-top:3px}
+</style>
+</head>
+<body>
+<header>
+  <div class="header-inner">
+    <a href="/menu" class="logo">Dizel<span>Trade</span></a>
+    <div class="user-info">
+      <span>{{ username }}</span>
+      <a href="/logout" class="logout">выход</a>
+    </div>
+  </div>
+</header>
+<div class="page">
+  <div class="greeting">// добро пожаловать</div>
+  <h1>Что записать?</h1>
+  <div class="grid">
+    <a href="/wizard/auto" class="menu-btn" style="--btn-color:#e8b84b">
+      <div class="btn-icon">🚛</div>
+      <div class="btn-label">Автопарк</div>
+      <div class="btn-desc">расходы / рейсы</div>
+    </a>
+    <a href="/wizard/hire" class="menu-btn" style="--btn-color:#5b8cf5">
+      <div class="btn-icon">📦</div>
+      <div class="btn-label">Найм</div>
+      <div class="btn-desc">перевозка</div>
+    </a>
+    <a href="/wizard/income" class="menu-btn" style="--btn-color:#3a9a5c">
+      <div class="btn-icon">💰</div>
+      <div class="btn-label">Доходы</div>
+      <div class="btn-desc">входящие</div>
+    </a>
+    <a href="/wizard/expenses" class="menu-btn" style="--btn-color:#c94f1e">
+      <div class="btn-icon">🧾</div>
+      <div class="btn-label">Расходы</div>
+      <div class="btn-desc">статьи затрат</div>
+    </a>
+    <a href="/wizard/debt_payment" class="menu-btn item-full" style="--btn-color:#9b6af5">
+      <div class="btn-icon">💸</div>
+      <div class="btn-label">Записать оплату долга</div>
+      <div class="btn-desc">учёт дебиторки</div>
+    </a>
+  </div>
+</div>
+</body>
+</html>
