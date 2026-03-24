@@ -17,6 +17,13 @@ load_dotenv()
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "change-me-now")
 
+@app.template_filter("from_json")
+def from_json_filter(value):
+    try:
+        return json.loads(value) if value else {}
+    except Exception:
+        return {}
+
 APP_PASSWORD = os.getenv("WEB_APP_PASSWORD", "change-me-now")
 
 SHEET_URL = os.getenv("SHEET_URL_LOGISTICS") or os.getenv("SHEET_URL")
