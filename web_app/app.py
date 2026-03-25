@@ -158,8 +158,20 @@ def now_str():
 
 
 def parse_debt_comment(comment):
-    match = re.search(r'долг\s+"([^"]+)"', comment, re.IGNORECASE)
-    return match.group(1).strip() if match else None
+    if not comment:
+        return None
+
+    patterns = [
+        r'долг\s*\(([^)]+)\)',
+        r'долг\s*"([^"]+)"',
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, comment, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+
+    return None
 
 
 def format_tg_message(username: str, section: str, data: dict, result_text: str) -> str:
