@@ -1255,12 +1255,12 @@ async def pdf_item_handler(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer()
         return
     
-    def _remove_kb():
+    async def _remove_kb():
         try:
             await callback.message.edit_reply_markup(reply_markup=None)
         except Exception:
             pass
-    
+
     if action == "done":
         saved   = session.get("saved_count", 0)
         skipped = session.get("skipped_count", 0)
