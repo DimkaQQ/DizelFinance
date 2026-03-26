@@ -1,4 +1,9 @@
 # -*- coding: utf-8 -*-
+"""
+DizelFinance Bot — Telegram бот для учёта финансов
+Автор: Dimash | 2026
+Обновлённая структура таблицы Planergo
+"""
 import os
 import re
 import logging
@@ -39,7 +44,7 @@ except ImportError:
 # Глобальные хранилища (сессии — в памяти)
 # ============================================================
 pending_transactions = {}
-pdf_sessions = {}  # Используется для сессий PDF и XLSX
+pdf_sessions = {}  # Используется для сессий PDF, XLSX и скриншотов
 
 # ============================================================
 # SQLite — постоянное хранилище черновиков
@@ -69,7 +74,7 @@ def drafts_get(user_id: int) -> list:
     ).fetchall()
     con.close()
     return [{"id":r[0],"a":r[1],"cur":r[2],"rate":r[3],"a_rub":r[4],
-            "c":r[5],"d":r[6],"m":r[7],"tx_type":r[8]} for r in rows]
+             "c":r[5],"d":r[6],"m":r[7],"tx_type":r[8]} for r in rows]
 
 def drafts_add(user_id: int, draft: dict):
     con = sqlite3.connect(DB_PATH)
@@ -106,7 +111,7 @@ GEMINI_API_KEY   = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL     = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 CLOUDFLARE_PROXY = os.getenv("CLOUDFLARE_PROXY", "https://gemini-proxy.dimash210775.workers.dev")
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 # ============================================================
 # Google Sheets
@@ -150,6 +155,7 @@ def _fetch_rate(currency: str) -> float:
                 return result
     except Exception as e:
         logging.warning(f"exchangerate-api: {e}")
+    
     # Источник 2: ЦБ РФ
     try:
         resp = requests.get("https://www.cbr.ru/scripts/XML_daily.asp", timeout=4)
@@ -162,6 +168,7 @@ def _fetch_rate(currency: str) -> float:
                 return result
     except Exception as e:
         logging.warning(f"cbr.ru: {e}")
+    
     # Источник 3: open.er-api.com
     try:
         resp = requests.get("https://open.er-api.com/v6/latest/RUB", timeout=4)
@@ -210,7 +217,7 @@ def extract_json(text: str):
                 if depth == 0:
                     return i
         return -1
-
+    
     if '[' in text:
         start = text.index('[')
         end   = find_matching_end(text, start, '[', ']')
@@ -238,7 +245,7 @@ def ask_gemini(prompt: str, image_bytes: bytes = None, mime_type: str = "image/j
                 return json.load(f)
         except Exception:
             pass
-
+    
     parts = []
     if image_bytes:
         parts.append({
@@ -248,7 +255,7 @@ def ask_gemini(prompt: str, image_bytes: bytes = None, mime_type: str = "image/j
             }
         })
     parts.append({"text": prompt})
-
+    
     payload = {
         "contents": [{"parts": parts}],
         "generationConfig": {
@@ -257,7 +264,7 @@ def ask_gemini(prompt: str, image_bytes: bytes = None, mime_type: str = "image/j
         }
     }
     
-    url   = f"{CLOUDFLARE_PROXY}/proxy/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+    url = f"{CLOUDFLARE_PROXY}/proxy/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
     
     for attempt in range(5):
         try:
@@ -279,62 +286,117 @@ def ask_gemini(prompt: str, image_bytes: bytes = None, mime_type: str = "image/j
         except Exception as e:
             logging.error(f"Gemini exception (attempt {attempt + 1}): {e}")
             _time_module.sleep(5 * (attempt + 1))
+    
     raise ValueError("Не удалось получить ответ от Gemini после 5 попыток")
 
 # ============================================================
-# МАППИНГ СТАТЕЙ → ТАБЛИЦА
+# МАППИНГ СТАТЕЙ → ТАБЛИЦА (ОБНОВЛЁННАЯ СТРУКТУРА)
 # ============================================================
+# Доходы делятся на: Поступления и Накопления (Движение Активов)
 INCOME_ARTICLES = {
-    "Зарплата": "Поступления", "Подработка": "Поступления", "Премия и бонусы": "Поступления",
-    "Бизнес / самозанятость": "Поступления", "Поступления с маркетплейсов": "Поступления",
-    "Фриланс": "Поступления", "Пособия и выплаты от государства": "Поступления",
-    "Декретные / детские пособия": "Поступления", "Стипендия / грант": "Поступления",
-    "Пенсия": "Поступления", "Алименты": "Поступления", "Подарки деньгами": "Поступления",
-    "Возврат долгов": "Поступления", "Продажа вещей": "Поступления", "Кэшбэк и бонусы": "Поступления",
-    "Проценты по вкладам": "Поступления", "Инвестиционный доход": "Поступления",
-    "Аренда недвижимости": "Поступления", "Прочие поступления": "Поступления",
-    "Дети и будущее детей": "Накопления", "Финансовая подушка": "Накопления",
-    "Инвестиции / капитал": "Накопления", "Пенсия / долгий срок": "Накопления",
-    "Резерв на непредвиденные расходы": "Накопления", "Погашение кредитов": "Накопления",
-    "Погашение ипотеки": "Накопления", "Переезд / ремонт": "Накопления",
-    "Крупная покупка (техника, мебель)": "Накопления", "Автомобиль / водительские расходы": "Накопления",
-    "Отпуск и путешествия": "Накопления", "Обучение и развитие": "Накопления",
-    "Здоровье и медицина": "Накопления", "Подарки и праздники (накопления)": "Накопления",
-    "Прочие цели": "Накопления",
+    # Поступления
+    "Зарплата":                          "Поступления",
+    "Прочие поступления":                "Поступления",
+    "Премия и бонусы":                   "Поступления",
+    "Инвестиционный доход":              "Поступления",
+    "Подработка":                        "Поступления",
+    "Бизнес / самозанятость":            "Поступления",
+    "Поступления с маркетплейсов":       "Поступления",
+    "Фриланс":                           "Поступления",
+    "Пособия и выплаты от государства":  "Поступления",
+    "Декретные / детские пособия":       "Поступления",
+    "Стипендия / грант":                 "Поступления",
+    "Пенсия":                            "Поступления",
+    "Алименты":                          "Поступления",
+    "Подарки деньгами":                  "Поступления",
+    "Возврат долгов":                    "Поступления",
+    "Продажа вещей":                     "Поступления",
+    "Кэшбэк и бонусы":                   "Поступления",
+    "Проценты по вкладам":               "Поступления",
+    "Аренда недвижимости":               "Поступления",
+    # Накопления (Движение Активов)
+    "Финансовая подушка":                "Накопления",
+    "Инвестиции / капитал":              "Накопления",
+    "Пенсия / долгий срок":              "Накопления",
+    "Дети и будущее детей":              "Накопления",
+    "Резерв на непредвиденные расходы":  "Накопления",
+    "Погашение кредитов":                "Накопления",
+    "Погашение ипотеки":                 "Накопления",
+    "Переезд / ремонт":                  "Накопления",
+    "Крупная покупка (техника, мебель)": "Накопления",
+    "Автомобиль / водительские расходы": "Накопления",
+    "Отпуск и путешествия":              "Накопления",
+    "Обучение и развитие":               "Накопления",
+    "Здоровье и медицина":               "Накопления",
+    "Подарки и праздники (цели)":        "Накопления",
+    "Прочие цели":                       "Накопления",
 }
 
+# Расходы: Крупные расходы | Расходы | Долги
 EXPENSE_ARTICLES = {
-    "Аренда жилья": "Платежи", "Детский сад / школа": "Платежи", "Подписки": "Платежи",
-    "Коммунальные платежи": "Платежи", "Связь и интернет": "Платежи", "Мобильная связь": "Платежи",
-    "Абонементы": "Платежи", "Страхование": "Платежи", "Ипотека": "Платежи",
-    "Платеж по кредиту": "Платежи", "Платеж по кредитной карте": "Платежи",
-    "Налоги и сборы": "Платежи", "Алименты / регулярные выплаты": "Платежи",
-    "Рассрочки и покупки в долг": "Платежи", "Прочие обязательные платежи": "Платежи",
-    "Продукты": "Расходы", "Кафе и рестораны": "Расходы", "Медицина": "Расходы",
-    "Одежда и обувь": "Расходы", "Спорт и фитнес": "Расходы", "Доставка еды": "Расходы",
-    "Кофе и перекусы": "Расходы", "Такси и каршеринг": "Расходы", "Проезд в транспорте": "Расходы",
-    "Бензин": "Расходы", "Парковки": "Расходы", "Косметика и уход": "Расходы",
-    "Парикмахер / салон красоты": "Расходы", "Товары для дома": "Расходы",
-    "Техника и гаджеты": "Расходы", "Дети: одежда и игрушки": "Расходы",
-    "Дети: кружки и занятия": "Расходы", "Домашние животные": "Расходы",
-    "Хобби и творчество": "Расходы", "Книги и обучение": "Расходы",
-    "Развлечения и отдых": "Расходы", "Путешествия и поездки": "Расходы",
-    "Подарки и праздники": "Расходы", "Благотворительность": "Расходы",
-    "Автомобиль": "Расходы", "Прочие расходы": "Расходы",
-    "Бизнес": "Долги", "Кредит": "Долги", "Кредитная карта": "Долги",
-    "Ипотека (долг)": "Долги", "Коммунальные услуги": "Долги", "Налоги и штрафы": "Долги",
-    "Аренда жилья (долг)": "Долги", "Рассрочка в магазине": "Долги",
-    "Обучение и курсы": "Долги", "Друзья и семья": "Долги", "Прочее": "Долги",
+    # Крупные расходы (заменяет Платежи — col O)
+    "Аренда жилья":                      "Крупные расходы",
+    "Детский сад / школа":               "Крупные расходы",
+    "Подписки":                          "Крупные расходы",
+    "Коммунальные платежи":              "Крупные расходы",
+    "Связь и интернет":                  "Крупные расходы",
+    "Страхование":                       "Крупные расходы",
+    "Ипотека":                           "Крупные расходы",
+    "Платеж по кредиту":                 "Крупные расходы",
+    "Платеж по кредитной карте":         "Крупные расходы",
+    "Налоги и сборы":                    "Крупные расходы",
+    "Абонементы":                        "Крупные расходы",
+    "Прочие обязательные платежи":       "Крупные расходы",
+    # Расходы (col AB)
+    "Продукты":                          "Расходы",
+    "Кафе и рестораны":                  "Расходы",
+    "Медицина":                          "Расходы",
+    "Одежда и обувь":                    "Расходы",
+    "Спорт и фитнес":                    "Расходы",
+    "Путешествия и поездки":             "Расходы",
+    "Доставка еды":                      "Расходы",
+    "Кофе и перекусы":                   "Расходы",
+    "Такси и каршеринг":                 "Расходы",
+    "Проезд в транспорте":               "Расходы",
+    "Бензин":                            "Расходы",
+    "Парковки":                          "Расходы",
+    "Косметика и уход":                  "Расходы",
+    "Парикмахер / салон красоты":        "Расходы",
+    "Товары для дома":                   "Расходы",
+    "Техника и гаджеты":                 "Расходы",
+    "Дети: одежда и игрушки":            "Расходы",
+    "Дети: кружки и занятия":            "Расходы",
+    "Домашние животные":                 "Расходы",
+    "Хобби и творчество":                "Расходы",
+    "Книги и обучение":                  "Расходы",
+    "Развлечения и отдых":               "Расходы",
+    "Подарки и праздники":               "Расходы",
+    "Благотворительность":               "Расходы",
+    "Автомобиль":                        "Расходы",
+    "Прочие расходы":                    "Расходы",
+    # Долги (col AO)
+    "Бизнес":                            "Долги",
+    "Кредит":                            "Долги",
+    "Кредитная карта":                   "Долги",
+    "Ипотека (долг)":                    "Долги",
+    "Коммунальные услуги":               "Долги",
+    "Налоги и штрафы":                   "Долги",
+    "Аренда жилья (долг)":               "Долги",
+    "Рассрочка в магазине":              "Долги",
+    "Обучение и курсы":                  "Долги",
+    "Друзья и семья":                    "Долги",
+    "Прочее":                            "Долги",
 }
 
 INCOME_BY_TABLE = {
     "Поступления": [a for a, t in INCOME_ARTICLES.items() if t == "Поступления"],
     "Накопления":  [a for a, t in INCOME_ARTICLES.items() if t == "Накопления"],
 }
+
 EXPENSE_BY_TABLE = {
-    "Платежи":   [a for a, t in EXPENSE_ARTICLES.items() if t == "Платежи"],
-    "Расходы":   [a for a, t in EXPENSE_ARTICLES.items() if t == "Расходы"],
-    "Долги":     [a for a, t in EXPENSE_ARTICLES.items() if t == "Долги"],
+    "Крупные расходы": [a for a, t in EXPENSE_ARTICLES.items() if t == "Крупные расходы"],
+    "Расходы":         [a for a, t in EXPENSE_ARTICLES.items() if t == "Расходы"],
+    "Долги":           [a for a, t in EXPENSE_ARTICLES.items() if t == "Долги"],
 }
 
 ALL_INCOME_ARTICLES  = list(INCOME_ARTICLES.keys())
@@ -343,12 +405,37 @@ ALL_EXPENSE_ARTICLES = list(EXPENSE_ARTICLES.keys())
 MONTH_SHEETS = {
     1: "ЯНВАРЬ", 2: "ФЕВРАЛЬ",  3: "МАРТ",     4: "АПРЕЛЬ",
     5: "МАЙ",    6: "ИЮНЬ",     7: "ИЮЛЬ",     8: "АВГУСТ",
-    9: "СЕНТЯБРЬ",10:"ОКТЯБРЬ", 11:"НОЯБРЬ",   12:"ДЕКАБРЬ",
+    9: "СЕНТЯБРЬ", 10: "ОКТЯБРЬ", 11: "НОЯБРЬ",   12: "ДЕКАБРЬ",
 }
 
 CURRENCIES       = ["RUB", "USD", "EUR", "KZT", "IDR", "VND"]
-CARDS            = ["Тинькофф", "Альфа", "Сбер", "Freedom"]
+CARDS            = ["Тинькофф", "Альфа", "Сбер", "Freedom", "Kaspi"]
 CURRENCY_SYMBOLS = {"RUB": "₽", "USD": "$", "EUR": "€", "KZT": "₸", "IDR": "Rp", "VND": "₫"}
+
+# ============================================================
+# Структура колонок новой таблицы (Planergo)
+# ============================================================
+# (col_name, col_fact) — номера колонок (1-based)
+TABLE_COLUMNS = {
+    "Поступления":     (2,  12),   # B=название, L=факт
+    "Крупные расходы": (15, 25),   # O=название, Y=факт
+    "Расходы":         (28, 38),   # AB=название, AL=факт
+    "Долги":           (41, 51),   # AO=название, AY=факт
+    "Накопления":      (54, 64),   # BB=название, BL=факт
+}
+
+DATA_ROW_START = 28
+DATA_ROW_END   = 39
+
+# Куда пишем строки транзакций (col E/P для доходов, AI/AL/AW для расходов)
+# Доходы и накопления: дата→B(2), статья→E(5), сумма→P(16)
+# Расходы/Долги/Крупные: дата→AI(35), статья→AL(38), сумма→AW(49)
+TX_INCOME_DATE_COL    = 2   # B
+TX_INCOME_ARTICLE_COL = 5   # E
+TX_INCOME_AMOUNT_COL  = 16  # P
+TX_EXPENSE_DATE_COL   = 35  # AI
+TX_EXPENSE_ARTICLE_COL = 38  # AL
+TX_EXPENSE_AMOUNT_COL = 49  # AW
 
 # ============================================================
 # Логика листов месяцев
@@ -362,17 +449,11 @@ def get_month_sheet_name(date_str: str) -> str:
             continue
     return MONTH_SHEETS[datetime.now().month]
 
-TABLE_COLUMNS = {
-    "Поступления": (2,  12),
-    "Платежи":     (15, 25),
-    "Расходы":     (28, 38),
-    "Долги":       (41, 51),
-    "Накопления":  (54, 64),
-}
-DATA_ROW_START = 28
-DATA_ROW_END   = 39
-
 def write_to_month_sheet(date_str: str, article: str, amount_rub: float, table_name: str):
+    """
+    Пишет сумму в ячейку ФАКТ нужной таблицы (строка со статьёй).
+    Если статья не найдена — добавляет в первую пустую строку диапазона.
+    """
     sheet_name = get_month_sheet_name(date_str)
     try:
         ws = sh.worksheet(sheet_name)
@@ -427,6 +508,48 @@ def write_to_month_sheet(date_str: str, article: str, amount_rub: float, table_n
         logging.error(f"Ошибка записи в ячейку {sheet_name} R{target_row}C{col_fact}: {e}")
         return False
 
+def write_transaction_row(date_str: str, article: str, amount_rub: float,
+                          currency: str, table_name: str, card: str, comment: str):
+    """
+    Пишет строку транзакции в лист месяца в секцию транзакций (строки 46+).
+    Доходы/Накопления → колонки B, E, P
+    Расходы/Долги/Крупные → колонки AI, AL, AW
+    """
+    sheet_name = get_month_sheet_name(date_str)
+    try:
+        ws = sh.worksheet(sheet_name)
+    except Exception:
+        return
+    
+    is_income = table_name in ("Поступления", "Накопления")
+    if is_income:
+        date_col   = TX_INCOME_DATE_COL
+        art_col    = TX_INCOME_ARTICLE_COL
+        amount_col = TX_INCOME_AMOUNT_COL
+    else:
+        date_col   = TX_EXPENSE_DATE_COL
+        art_col    = TX_EXPENSE_ARTICLE_COL
+        amount_col = TX_EXPENSE_AMOUNT_COL
+    
+    # Найти первую пустую строку в этом столбце начиная с 46
+    try:
+        col_vals = ws.col_values(date_col)
+        next_row = 46
+        for i, v in enumerate(col_vals[45:], start=46):
+            if not str(v).strip():
+                next_row = i
+                break
+        else:
+            next_row = max(46, len(col_vals) + 1)
+        
+        date_short = date_str.split(",")[0].strip()
+        ws.update_cell(next_row, date_col, date_short)
+        ws.update_cell(next_row, art_col, article)
+        ws.update_cell(next_row, amount_col, round(amount_rub, 2))
+        logging.info(f"📝 Строка транзакции → {sheet_name} R{next_row} {article} {amount_rub}")
+    except Exception as e:
+        logging.error(f"Ошибка записи строки транзакции: {e}")
+
 # ============================================================
 # История и Угадывание статей
 # ============================================================
@@ -472,6 +595,7 @@ def guess_article(merchant: str, amount: float, tx_type: str = "Расход", h
     )
     hint_line = f"\nПодсказка банка: «{hint}»" if hint else ""
     history_line = ("История:\n" + history_text) if history_text else ""
+    
     prompt = (
         f"Определи статью для транзакции.\n"
         f"Место: {merchant} | Сумма: {amount} | Тип: {tx_type}{hint_line}\n"
@@ -542,7 +666,7 @@ def guess_articles_batch(transactions: list) -> list:
         logging.error(f"Ошибка батч-угадывания: {e}")
         return [
             guess_article(tx.get("merchant",""), tx.get("amount",0),
-            tx.get("tx_type","Расход"), tx.get("category_hint",""))
+                         tx.get("tx_type","Расход"), tx.get("category_hint",""))
             for tx in transactions
         ]
 
@@ -561,15 +685,15 @@ def parse_pdf_transactions(pdf_base64: str) -> list:
             pix       = page.get_pixmap(matrix=fitz.Matrix(150 / 72, 150 / 72))
             img_bytes = pix.tobytes("png")
             prompt = f"""Страница {i + 1} банковской выписки.
-Извлеки ВСЕ транзакции РАСХОДОВ. Для каждой верни:
+Извлеки ВСЕ транзакции. Для каждой верни:
 - date: ДД.ММ.ГГГГ
 - amount: число (положительное)
 - currency: RUB/USD/EUR/KZT
 - merchant: название магазина/места
 - card: карта если указана, иначе ""
 - category_hint: категория трат если видна на странице, иначе ""
-- tx_type: "Расход" (по умолчанию)
-Игнорируй: пополнения, переводы между счетами, проценты.
+- tx_type: "Расход" или "Доход"
+Игнорируй: пополнения счёта, переводы между своими счетами.
 Ответ ТОЛЬКО JSON массивом:
 [{{"date": "01.01.2024", "amount": 1500, "currency": "RUB", "merchant": "Пятёрочка", "card": "Тинькофф", "tx_type": "Расход", "category_hint": "еда"}}]
 Если транзакций нет — []."""
@@ -718,11 +842,9 @@ class PDFForm(StatesGroup):
 # ============================================================
 def main_menu_kb():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add("➕ Новая транзакция")
-    kb.add("📋 Мои транзакции")
-    kb.add("📊 Статистика")
-    kb.add("⚙️ Настройки")
-    kb.add("📥 Отложенные")
+    kb.row("➕ Новая транзакция")
+    kb.row("📋 Мои транзакции", "📊 Статистика")
+    kb.row("📥 Отложенные", "⚙️ Настройки")
     return kb
 
 def tx_type_kb():
@@ -737,11 +859,19 @@ def table_choice_kb(tx_type: str):
         kb.add("📥 Поступления")
         kb.add("🏦 Накопления")
     else:
-        kb.add("💳 Платежи")
+        kb.add("💳 Крупные расходы")
         kb.add("🛒 Расходы")
         kb.add("⚠️ Долги")
     kb.add("⏪ Назад")
     return kb
+
+TABLE_LABEL_MAP = {
+    "📥 Поступления":    "Поступления",
+    "🏦 Накопления":     "Накопления",
+    "💳 Крупные расходы":"Крупные расходы",
+    "🛒 Расходы":        "Расходы",
+    "⚠️ Долги":          "Долги",
+}
 
 def articles_kb(articles: list):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
@@ -821,6 +951,7 @@ def build_preview(data: dict) -> str:
     tx_icon    = "💰" if tx_type == "Доход" else "💸"
     article    = data.get("article", "")
     table_name = data.get("table_name", "")
+    
     preview = (
         f"📝 <b>Предварительный просмотр:</b>\n"
         f"{tx_icon} {tx_type}\n"
@@ -851,6 +982,7 @@ def build_pdf_tx_preview(tx: dict, idx: int, total: int) -> str:
     tx_type    = tx.get("tx_type", "Расход")
     tx_icon    = "💰" if tx_type == "Доход" else "💸"
     hint       = tx.get("category_hint", "")
+    
     text = (
         f"<b>#{idx + 1} из {total}</b>\n"
         f"{tx_icon} <b>{tx.get('merchant', '')}</b>\n"
@@ -884,7 +1016,7 @@ async def save_transaction_to_sheets(data: dict):
         headers = ws.row_values(1)
         if headers and headers[1] == "Категория":
             ws.update("A1:J1", [["Дата", "Таблица", "Статья", "Сумма", "Валюта",
-            "Курс", "Сумма в Руб", "Карта", "Место", "Тип"]])
+                                "Курс", "Сумма в Руб", "Карта", "Место", "Тип"]])
             logging.info("Заголовки листа Транзакции обновлены")
     except Exception as e:
         logging.warning(f"Не удалось проверить/обновить заголовки: {e}")
@@ -905,6 +1037,10 @@ async def save_transaction_to_sheets(data: dict):
     
     # 2) Пишем в лист месяца (в нужную таблицу, в строку статьи)
     write_to_month_sheet(date_str, article, float(amount_rub), table_name)
+    
+    # 3) Пишем строку транзакции в лист месяца (строки 46+)
+    write_transaction_row(date_str, article, float(amount_rub), currency,
+                         table_name, data.get("card", ""), data.get("comment", ""))
 
 # ============================================================
 # Уведомление админу
@@ -934,13 +1070,12 @@ async def cmd_start(message: types.Message, state: FSMContext):
     await message.answer(
         "👋 <b>Добро пожаловать в DizelFinance!</b>\n"
         "📱 <b>Способы записи транзакций:</b>\n"
-        "— Shortcut на iPhone → мгновенная запись\n"
-        "— Отправь PDF выписку → автопарсинг\n"
-        "— Отправь Excel выписку → автопарсинг\n"
-        "— Отправь скриншот банка → автопарсинг\n"
-        "— Вставь текст SMS → автораспознавание\n"
+        "— Отправь <b>скриншот</b> банка → AI распознает\n"
+        "— Отправь <b>PDF выписку</b> → автопарсинг\n"
+        "— Отправь <b>Excel выписку</b> → автопарсинг\n"
+        "— Вставь <b>текст SMS</b> → автораспознавание\n"
         "— «➕ Новая транзакция» → ручной ввод\n"
-        "Транзакции записываются:\n"
+        "\nТранзакции записываются:\n"
         "✅ В лист «Транзакции»\n"
         "✅ В лист текущего месяца (ЯНВАРЬ, ФЕВРАЛЬ...)\n"
         "Выберите действие:",
@@ -954,9 +1089,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
 async def handle_document(message: types.Message, state: FSMContext):
     if ALLOWED_IDS and message.from_user.id not in ALLOWED_IDS:
         return
-    
     fname = (message.document.file_name or "").lower()
-    
     if fname.endswith(('.xlsx', '.xls')):
         await handle_xlsx(message, state)
     elif fname.endswith('.pdf'):
@@ -970,49 +1103,17 @@ async def handle_xlsx(message: types.Message, state: FSMContext):
         file       = await bot.get_file(message.document.file_id)
         file_bytes = await bot.download_file(file.file_path)
         xlsx_bytes = file_bytes.read()
-        
         await message.answer("🤖 Gemini AI анализирует выписку...")
         transactions = parse_xlsx_transactions(xlsx_bytes)
-        
         if not transactions:
             await message.answer("❌ Не удалось найти транзакции в файле.", reply_markup=main_menu_kb())
             return
-        
         existing = get_existing_transactions()
         await message.answer(f"📊 Найдено {len(transactions)} транзакций. Определяю статьи...")
-        
         article_results = guess_articles_batch(transactions)
-        enriched = []
-        for tx, (article, table_name) in zip(transactions, article_results):
-            date_part    = str(tx.get("date", "")).split(",")[0].strip()
-            amount_str   = str(tx.get("amount", ""))
-            merchant_key = str(tx.get("merchant", "")).strip().lower()
-            is_duplicate = f"{date_part}|{amount_str}|{merchant_key}" in existing
-            currency     = tx.get("currency", "RUB")
-            rate         = get_cbr_rate(currency)
-            amount_rub   = round(float(tx.get("amount", 0)) * rate, 2)
-            enriched.append({
-                **tx,
-                "article": article, "table_name": table_name,
-                "rate": rate, "amount_rub": amount_rub,
-                "is_duplicate": is_duplicate,
-                "category_hint": tx.get("category_hint", ""),
-            })
-        
-        user_id = message.from_user.id
-        pdf_sessions[user_id] = {
-            "transactions": enriched, "current_idx": 0,
-            "saved_count": 0, "skipped_count": 0,
-        }
-        dup   = sum(1 for t in enriched if t["is_duplicate"])
-        new_c = len(enriched) - dup
-        await message.answer(
-            f"✅ <b>Excel выписка обработана!</b>\n"
-            f"📄 Транзакций: {len(enriched)}\n"
-            f"🆕 Новых: {new_c}\n"
-            f"⚠️ Возможных дубликатов: {dup}\nЧто делаем?",
-            parse_mode="HTML", reply_markup=pdf_action_kb()
-        )
+        enriched = _enrich_transactions(transactions, article_results, existing)
+        _store_session(message.from_user.id, enriched)
+        await _send_session_summary(message, enriched, "Excel")
     except Exception as e:
         logging.error(f"Ошибка обработки XLSX: {e}")
         await message.answer(f"❌ Ошибка: {e}", reply_markup=main_menu_kb())
@@ -1023,57 +1124,61 @@ async def handle_pdf(message: types.Message, state: FSMContext):
         file       = await bot.get_file(message.document.file_id)
         file_bytes = await bot.download_file(file.file_path)
         pdf_base64 = base64.b64encode(file_bytes.read()).decode('utf-8')
-        
         await message.answer("🤖 Gemini AI анализирует транзакции...")
         transactions = parse_pdf_transactions(pdf_base64)
-        
         if not transactions:
             await message.answer("❌ Не удалось найти транзакции в файле.")
             return
-        
         existing = get_existing_transactions()
-        await message.answer(f"📊 Найдено {len(transactions)} транзакций. Определяю статьи через AI (1 запрос)...")
-        
+        await message.answer(f"📊 Найдено {len(transactions)} транзакций. Определяю статьи через AI...")
         article_results = guess_articles_batch(transactions)
-        enriched = []
-        for tx, (article, table_name) in zip(transactions, article_results):
-            date_part    = str(tx.get("date", "")).split(",")[0].strip()
-            amount_str   = str(tx.get("amount", ""))
-            merchant     = str(tx.get("merchant", "")).strip().lower()
-            is_duplicate = f"{date_part}|{amount_str}|{merchant}" in existing
-            currency     = tx.get("currency", "RUB")
-            rate         = get_cbr_rate(currency)
-            amount_rub   = round(float(tx.get("amount", 0)) * rate, 2)
-            enriched.append({
-                **tx,
-                "article":       article,
-                "table_name":    table_name,
-                "rate":          rate,
-                "amount_rub":    amount_rub,
-                "is_duplicate":  is_duplicate,
-                "category_hint": tx.get("category_hint", ""),
-            })
-        
-        user_id = message.from_user.id
-        pdf_sessions[user_id] = {
-            "transactions":  enriched,
-            "current_idx":   0,
-            "saved_count":   0,
-            "skipped_count": 0,
-        }
-        duplicate_count = sum(1 for t in enriched if t["is_duplicate"])
-        new_count       = len(enriched) - duplicate_count
-        await message.answer(
-            f"✅ <b>Анализ завершён!</b>\n"
-            f"📄 Всего транзакций: {len(enriched)}\n"
-            f"🆕 Новых: {new_count}\n"
-            f"⚠️ Возможных дубликатов: {duplicate_count}\n"
-            f"Что делаем?",
-            parse_mode="HTML", reply_markup=pdf_action_kb()
-        )
+        enriched = _enrich_transactions(transactions, article_results, existing)
+        _store_session(message.from_user.id, enriched)
+        await _send_session_summary(message, enriched, "PDF")
     except Exception as e:
         logging.error(f"Ошибка обработки PDF: {e}")
         await message.answer(f"❌ Ошибка при обработке PDF: {e}")
+
+def _enrich_transactions(transactions: list, article_results: list, existing: set) -> list:
+    enriched = []
+    for tx, (article, table_name) in zip(transactions, article_results):
+        date_part    = str(tx.get("date", "")).split(",")[0].strip()
+        amount_str   = str(tx.get("amount", ""))
+        merchant_key = str(tx.get("merchant", "")).strip().lower()
+        is_duplicate = f"{date_part}|{amount_str}|{merchant_key}" in existing
+        currency     = tx.get("currency", "RUB")
+        rate         = get_cbr_rate(currency)
+        amount_rub   = round(float(tx.get("amount", 0)) * rate, 2)
+        enriched.append({
+            **tx,
+            "article":       article,
+            "table_name":    table_name,
+            "rate":          rate,
+            "amount_rub":    amount_rub,
+            "is_duplicate":  is_duplicate,
+            "category_hint": tx.get("category_hint", ""),
+        })
+    return enriched
+
+def _store_session(user_id: int, enriched: list):
+    pdf_sessions[user_id] = {
+        "transactions":  enriched,
+        "current_idx":   0,
+        "saved_count":   0,
+        "skipped_count": 0,
+    }
+
+async def _send_session_summary(message: types.Message, enriched: list, source_label: str):
+    dup   = sum(1 for t in enriched if t["is_duplicate"])
+    new_c = len(enriched) - dup
+    await message.answer(
+        f"✅ <b>{source_label} обработан!</b>\n"
+        f"📄 Транзакций: {len(enriched)}\n"
+        f"🆕 Новых: {new_c}\n"
+        f"⚠️ Возможных дубликатов: {dup}\n"
+        f"Что делаем?",
+        parse_mode="HTML", reply_markup=pdf_action_kb()
+    )
 
 # ============================================================
 # PDF/XLSX — действия
@@ -1149,7 +1254,13 @@ async def pdf_item_handler(callback: types.CallbackQuery, state: FSMContext):
         await callback.message.edit_text("❌ Сессия устарела.")
         await callback.answer()
         return
-    transactions = session["transactions"]
+    
+    def _remove_kb():
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+    
     if action == "done":
         saved   = session.get("saved_count", 0)
         skipped = session.get("skipped_count", 0)
@@ -1180,24 +1291,15 @@ async def pdf_item_handler(callback: types.CallbackQuery, state: FSMContext):
             await callback.answer("✅ Записано!")
         except Exception as e:
             await callback.answer(f"❌ Ошибка: {e}")
-        try:
-            await callback.message.edit_reply_markup(reply_markup=None)
-        except Exception:
-            pass
+        await _remove_kb()
         await show_pdf_transaction(callback.message, user_id, idx + 1)
     elif action == "skip":
         session["skipped_count"] = session.get("skipped_count", 0) + 1
         await callback.answer("⏭ Пропущено")
-        try:
-            await callback.message.edit_reply_markup(reply_markup=None)
-        except Exception:
-            pass
+        await _remove_kb()
         await show_pdf_transaction(callback.message, user_id, idx + 1)
     elif action == "next":
-        try:
-            await callback.message.edit_reply_markup(reply_markup=None)
-        except Exception:
-            pass
+        await _remove_kb()
         await show_pdf_transaction(callback.message, user_id, idx + 1)
     elif action == "edit_cat":
         tx = transactions[idx]
@@ -1214,10 +1316,7 @@ async def pdf_item_handler(callback: types.CallbackQuery, state: FSMContext):
             from_pdf=True,
             pdf_idx=idx,
         )
-        try:
-            await callback.message.edit_reply_markup(reply_markup=None)
-        except Exception:
-            pass
+        await _remove_kb()
         await TransactionForm.table_choice.set()
         await callback.message.answer(
             f"✏️ Редактируем статью для:\n<b>{tx.get('merchant','')}</b> — {tx.get('amount',0)} {tx.get('currency','RUB')}\nВыберите таблицу:",
@@ -1237,10 +1336,7 @@ async def pdf_item_handler(callback: types.CallbackQuery, state: FSMContext):
             article=tx.get("article", ""),
             table_name=tx.get("table_name", ""),
         )
-        try:
-            await callback.message.edit_reply_markup(reply_markup=None)
-        except Exception:
-            pass
+        await _remove_kb()
         await TransactionForm.edit_amount.set()
         symbol = CURRENCY_SYMBOLS.get(tx.get("currency","RUB"), tx.get("currency","RUB"))
         await callback.message.answer(
@@ -1290,16 +1386,16 @@ async def process_edit_currency(message: types.Message, state: FSMContext):
     rate       = get_cbr_rate(currency)
     amount_rub = round(new_amount * rate, 2)
     user_id    = message.from_user.id
-    session = pdf_sessions.get(user_id)
+    session    = pdf_sessions.get(user_id)
     if session and idx < len(session["transactions"]):
         session["transactions"][idx]["amount"]     = new_amount
         session["transactions"][idx]["currency"]   = currency
         session["transactions"][idx]["rate"]       = rate
         session["transactions"][idx]["amount_rub"] = amount_rub
-        await state.finish()
-        await PDFForm.reviewing.set()
-        await message.answer("✅ Сумма обновлена!", reply_markup=types.ReplyKeyboardRemove())
-        await show_pdf_transaction(message, user_id, idx)
+    await state.finish()
+    await PDFForm.reviewing.set()
+    await message.answer("✅ Сумма обновлена!", reply_markup=types.ReplyKeyboardRemove())
+    await show_pdf_transaction(message, user_id, idx)
 
 # ============================================================
 # Главное меню → новая транзакция
@@ -1330,24 +1426,15 @@ async def process_tx_type(message: types.Message, state: FSMContext):
 # ============================================================
 # Выбор таблицы
 # ============================================================
-TABLE_LABEL_MAP = {
-    "📥 Поступления": "Поступления",
-    "🏦 Накопления":  "Накопления",
-    "💳 Платежи":     "Платежи",
-    "🛒 Расходы":     "Расходы",
-    "⚠️ Долги":       "Долги",
-}
-
 @dp.message_handler(state=TransactionForm.table_choice)
 async def process_table_choice(message: types.Message, state: FSMContext):
+    data    = await state.get_data()
     if message.text == "⏪ Назад":
-        data    = await state.get_data()
-        user_id = message.from_user.id
         if data.get("from_pdf"):
             idx = data.get("pdf_idx", 0)
             await state.finish()
             await PDFForm.reviewing.set()
-            await show_pdf_transaction(message, user_id, idx)
+            await show_pdf_transaction(message, message.from_user.id, idx)
             return
         await TransactionForm.tx_type.set()
         tx_type = data.get("tx_type", "Расход")
@@ -1355,11 +1442,9 @@ async def process_table_choice(message: types.Message, state: FSMContext):
         return
     table_name = TABLE_LABEL_MAP.get(message.text)
     if not table_name:
-        data = await state.get_data()
         await message.answer("Выберите таблицу:", reply_markup=table_choice_kb(data.get("tx_type", "Расход")))
         return
     await state.update_data(table_name=table_name)
-    data = await state.get_data()
     tx_type = data.get("tx_type", "Расход")
     if tx_type == "Доход":
         articles = INCOME_BY_TABLE.get(table_name, [])
@@ -1373,28 +1458,20 @@ async def process_table_choice(message: types.Message, state: FSMContext):
 # ============================================================
 @dp.message_handler(state=TransactionForm.article_choice)
 async def process_article_choice(message: types.Message, state: FSMContext):
+    data       = await state.get_data()
+    tx_type    = data.get("tx_type", "Расход")
+    table_name = data.get("table_name", "")
     if message.text == "⏪ Назад":
-        data    = await state.get_data()
-        user_id = message.from_user.id
         if data.get("from_pdf"):
             idx = data.get("pdf_idx", 0)
             await state.finish()
             await PDFForm.reviewing.set()
-            await show_pdf_transaction(message, user_id, idx)
+            await show_pdf_transaction(message, message.from_user.id, idx)
             return
         await TransactionForm.table_choice.set()
-        tx_type = data.get("tx_type", "Расход")
         await message.answer("Выберите таблицу:", reply_markup=table_choice_kb(tx_type))
         return
-    data       = await state.get_data()
-    tx_type    = data.get("tx_type", "Расход")
-    table_name = data.get("table_name", "")
-    if tx_type == "Доход":
-        valid = INCOME_BY_TABLE.get(table_name, [])
-        art_map = INCOME_ARTICLES
-    else:
-        valid = EXPENSE_BY_TABLE.get(table_name, [])
-        art_map = EXPENSE_ARTICLES
+    valid = INCOME_BY_TABLE.get(table_name, []) if tx_type == "Доход" else EXPENSE_BY_TABLE.get(table_name, [])
     if message.text not in valid:
         await message.answer("Выберите статью из списка:", reply_markup=articles_kb(valid))
         return
@@ -1408,10 +1485,10 @@ async def process_article_choice(message: types.Message, state: FSMContext):
         if session:
             session["transactions"][data["pdf_idx"]]["article"]    = article
             session["transactions"][data["pdf_idx"]]["table_name"] = confirmed_table
-            updated_data = await state.get_data()
-            await TransactionForm.final_confirmation.set()
-            await message.answer(build_preview(updated_data), parse_mode="HTML", reply_markup=confirmation_kb())
-            return
+        updated_data = await state.get_data()
+        await TransactionForm.final_confirmation.set()
+        await message.answer(build_preview(updated_data), parse_mode="HTML", reply_markup=confirmation_kb())
+        return
     if data.get("from_webhook"):
         updated_data = await state.get_data()
         await TransactionForm.final_confirmation.set()
@@ -1425,14 +1502,11 @@ async def process_article_choice(message: types.Message, state: FSMContext):
 # ============================================================
 @dp.message_handler(state=TransactionForm.amount)
 async def process_amount(message: types.Message, state: FSMContext):
+    data       = await state.get_data()
     if message.text == "⏪ Назад":
-        data       = await state.get_data()
         tx_type    = data.get("tx_type", "Расход")
         table_name = data.get("table_name", "")
-        if tx_type == "Доход":
-            articles = INCOME_BY_TABLE.get(table_name, [])
-        else:
-            articles = EXPENSE_BY_TABLE.get(table_name, [])
+        articles = INCOME_BY_TABLE.get(table_name, []) if tx_type == "Доход" else EXPENSE_BY_TABLE.get(table_name, [])
         await TransactionForm.article_choice.set()
         await message.answer("Выберите статью:", reply_markup=articles_kb(articles))
         return
@@ -1534,8 +1608,8 @@ async def process_comment(message: types.Message, state: FSMContext):
 # ============================================================
 @dp.message_handler(state=TransactionForm.final_confirmation)
 async def final_confirmation(message: types.Message, state: FSMContext):
+    data = await state.get_data()
     if message.text == "✅ Записать":
-        data = await state.get_data()
         try:
             await save_transaction_to_sheets(data)
             await notify_admin(
@@ -1551,12 +1625,11 @@ async def final_confirmation(message: types.Message, state: FSMContext):
                 if session:
                     session["saved_count"] = session.get("saved_count", 0) + 1
                     next_idx = data.get("pdf_idx", 0) + 1
-                    session["current_idx"] = next_idx
-                    await state.finish()
-                    await PDFForm.reviewing.set()
-                    await message.answer("✅ Записано!", reply_markup=types.ReplyKeyboardRemove())
-                    await show_pdf_transaction(message, user_id, next_idx)
-                    return
+                await state.finish()
+                await PDFForm.reviewing.set()
+                await message.answer("✅ Записано!", reply_markup=types.ReplyKeyboardRemove())
+                await show_pdf_transaction(message, user_id, next_idx)
+                return
             await message.answer("✅ Транзакция записана!", reply_markup=main_menu_kb())
             await state.finish()
             await TransactionForm.waiting_for_action.set()
@@ -1565,12 +1638,10 @@ async def final_confirmation(message: types.Message, state: FSMContext):
             await message.answer(f"❌ Ошибка: {e}", reply_markup=main_menu_kb())
             await state.finish()
     elif message.text == "✏️ Изменить статью":
-        data = await state.get_data()
         await TransactionForm.table_choice.set()
         await message.answer("Выберите таблицу:", reply_markup=table_choice_kb(data.get("tx_type", "Расход")))
     elif message.text == "🔢 Изменить сумму/валюту":
         await TransactionForm.edit_amount.set()
-        data   = await state.get_data()
         symbol = CURRENCY_SYMBOLS.get(data.get("currency","RUB"), data.get("currency","RUB"))
         await message.answer(
             f"Текущая сумма: <b>{data.get('amount',0)} {symbol}</b>\nВведите новую сумму:",
@@ -1684,12 +1755,13 @@ async def my_transactions(message: types.Message):
                 amount_rub = float(str(raw_rub).replace(",", ".").replace(" ", "") or amount)
             except Exception:
                 amount_rub = amount
-            text += f"📅 {rec.get('Дата', '')}\n"
-            text += f"📂 {rec.get('Таблица', '')} → {rec.get('Статья', '')}\n"
-            text += f"💰 {amount:,.0f} {symbol}"
+            icon = "💰" if rec.get("Тип") == "Доход" else "💸"
+            text += f"{icon} <b>{rec.get('Статья','')}</b>\n"
+            text += f"  📅 {rec.get('Дата','')} | 📂 {rec.get('Таблица','')}\n"
+            text += f"  💰 {amount:,.0f} {symbol}"
             if currency != "RUB":
                 text += f" ({amount_rub:,.0f} ₽)"
-            text += f"\n🏪 {rec.get('Место', '')}\n{'─' * 30}\n"
+            text += f"\n  🏪 {rec.get('Место','') or '—'}\n{'─' * 32}\n"
         await message.answer(text, parse_mode="HTML", reply_markup=main_menu_kb())
     except Exception as e:
         logging.error(f"Ошибка чтения транзакций: {e}")
@@ -1708,6 +1780,7 @@ async def statistics(message: types.Message):
             return
         current_month = datetime.now().strftime("%m.%Y")
         table_totals  = {}
+        total_in = total_out = 0.0
         for rec in records:
             date_part = str(rec.get("Дата", "")).split(",")[0].strip()
             try:
@@ -1717,17 +1790,28 @@ async def statistics(message: types.Message):
                     raw = rec.get("Сумма в Руб", rec.get("Сумма в RUB", rec.get("Сумма", 0)))
                     amt = float(str(raw).replace(",", ".").replace(" ", "") or 0)
                     table_totals[tbl] = table_totals.get(tbl, 0) + amt
+                    if rec.get("Тип") == "Доход":
+                        total_in += amt
+                    else:
+                        total_out += amt
             except (ValueError, TypeError):
                 continue
         if not table_totals:
             await message.answer("📂 Нет транзакций за текущий месяц.", reply_markup=main_menu_kb())
             return
         total = sum(table_totals.values())
+        icons = {"Поступления":"📥","Накопления":"🏦","Крупные расходы":"💳","Расходы":"🛒","Долги":"⚠️"}
         text  = f"📊 <b>Статистика за {current_month}:</b>\n"
         for tbl, amt in sorted(table_totals.items(), key=lambda x: x[1], reverse=True):
             pct   = (amt / total) * 100 if total else 0
-            text += f"📂 {tbl}: {amt:,.0f} ₽ ({pct:.1f}%)\n"
-        text += f"\n{'═' * 30}\n💰 <b>ИТОГО:</b> {total:,.0f} ₽"
+            bar = "█"*int(pct/5)+"░"*(20-int(pct/5))
+            text += f"{icons.get(tbl,'📂')} <b>{tbl}</b>\n{bar} {pct:.1f}%\n{amt:,.0f} ₽\n"
+        text += (
+            f"{'═' * 32}\n"
+            f"📈 Доходы: {total_in:,.0f} ₽\n"
+            f"📉 Расходы: {total_out:,.0f} ₽\n"
+            f"💰 <b>ИТОГО:</b> {total:,.0f} ₽"
+        )
         await message.answer(text, parse_mode="HTML", reply_markup=main_menu_kb())
     except Exception as e:
         logging.error(f"Ошибка статистики: {e}")
@@ -1740,12 +1824,18 @@ async def statistics(message: types.Message):
 async def settings(message: types.Message):
     current_sheet = MONTH_SHEETS[datetime.now().month]
     await message.answer(
-        f"⚙️ <b>Настройки</b>\n"
+        f"⚙️ <b>Настройки DizelFinance</b>\n"
         f"👤 Ваш ID: <code>{message.from_user.id}</code>\n"
         f"🗄 Google Sheets: {'✅ Подключён' if sh else '❌ Не подключён'}\n"
-        f"🤖 Gemini API: {'✅ Подключён' if GEMINI_API_KEY else '❌ Не настроен'}\n"
+        f"🤖 Gemini API: {'✅ '+GEMINI_MODEL if GEMINI_API_KEY else '❌ Не настроен'}\n"
         f"🌐 Cloudflare Proxy: ✅ {CLOUDFLARE_PROXY}\n"
-        f"📅 Текущий лист месяца: <b>{current_sheet}</b>",
+        f"📅 Текущий лист месяца: <b>{current_sheet}</b>\n"
+        f"\n<b>Таблицы месяца:</b>\n"
+        f"📥 Поступления  → col B / L\n"
+        f"💳 Крупные расходы → col O / Y\n"
+        f"🛒 Расходы → col AB / AL\n"
+        f"⚠️ Долги → col AO / AY\n"
+        f"🏦 Накопления → col BB / BL",
         parse_mode="HTML", reply_markup=main_menu_kb()
     )
 
@@ -1832,137 +1922,41 @@ async def handle_screenshot(message: types.Message, state: FSMContext):
             )
             return
         if len(transactions) == 1:
-            tx         = transactions[0]
-            amount     = float(tx.get("amount", 0))
-            currency   = tx.get("currency", "RUB")
-            merchant   = tx.get("merchant", "")
-            card       = tx.get("card", "")
-            tx_type_w  = tx.get("tx_type", "Расход")
-            date_raw   = tx.get("date", "")
-            date       = date_raw if date_raw else datetime.now().strftime("%d.%m.%Y, %H:%M")
-            hint       = tx.get("category_hint", "")
-            rate       = get_cbr_rate(currency)
-            amount_rub = round(amount * rate, 2)
-            symbol     = CURRENCY_SYMBOLS.get(currency, currency)
-            tx_icon    = "💰" if tx_type_w == "Доход" else "💸"
-            article, table_name = guess_article(merchant, amount, tx_type=tx_type_w, hint=hint)
-            tx_id = str(uuid.uuid4())[:8]
-            pending_transactions[tx_id] = {
-                "a": amount, "m": merchant, "c": card, "d": date,
-                "cur": currency, "rate": rate, "a_rub": amount_rub,
-                "tx_type": tx_type_w, "article": article, "table_name": table_name,
-            }
-            user_id = message.from_user.id
-            drafts_add(user_id, {
-                "id": str(uuid.uuid4())[:8], "a": amount, "m": merchant, "c": card, "d": date,
-                "cur": currency, "rate": rate, "a_rub": amount_rub, "tx_type": tx_type_w,
-            })
-            kb = types.InlineKeyboardMarkup(row_width=1)
-            ai_label = f"🤖 {table_name} → {article}"
-            kb.add(types.InlineKeyboardButton(ai_label, callback_data=f"wbq|{tx_id}|{article}|{table_name}"))
-            if tx_type_w == "Расход":
-                alts = [a for a in EXPENSE_BY_TABLE.get(table_name, []) if a != article][:3]
-            else:
-                alts = [a for a in INCOME_BY_TABLE.get(table_name, []) if a != article][:3]
-            for alt in alts:
-                kb.add(types.InlineKeyboardButton(alt, callback_data=f"wbq|{tx_id}|{alt}|{table_name}"))
-            kb.add(
-                types.InlineKeyboardButton("📋 Все статьи", callback_data=f"wb|{tx_id}"),
-                types.InlineKeyboardButton("❌ Пропустить",  callback_data="wb|no")
-            )
-            hint_line = f"\n💡 Банк: <i>{hint}</i>" if hint else ""
-            preview = (
-                f"📸 <b>Скриншот распознан:</b>\n"
-                f"{tx_icon} {tx_type_w}\n"
-                f"💵 {amount:,.2f} {symbol}\n"
-                f"🏪 {merchant}\n"
-                f"💳 {card}\n"
-                f"📅 {date}{hint_line}\n"
-                f"📂 Таблица: <b>{table_name}</b>\n"
-                f"📋 Статья: <b>{article}</b>\n"
-                f"Подтвердите или выберите другую:"
-            )
-            await message.answer(preview, parse_mode="HTML", reply_markup=kb)
-            return
-        # Несколько транзакций
-        existing = get_existing_transactions()
-        await message.answer(f"📊 Найдено {len(transactions)} транзакций. Определяю статьи через AI (1 запрос)...")
-        article_results = guess_articles_batch(transactions)
-        enriched = []
-        for tx, (article, table_name) in zip(transactions, article_results):
-            date_part    = str(tx.get("date", "")).split(",")[0].strip()
-            amount_str   = str(tx.get("amount", ""))
-            merchant_key = str(tx.get("merchant", "")).strip().lower()
-            is_duplicate = f"{date_part}|{amount_str}|{merchant_key}" in existing
-            currency     = tx.get("currency", "RUB")
-            rate         = get_cbr_rate(currency)
-            amount_rub   = round(float(tx.get("amount", 0)) * rate, 2)
-            enriched.append({
-                **tx,
-                "article":      article,
-                "table_name":   table_name,
-                "rate":         rate,
-                "amount_rub":   amount_rub,
-                "is_duplicate": is_duplicate,
-                "category_hint":tx.get("category_hint",""),
-            })
-        user_id = message.from_user.id
-        pdf_sessions[user_id] = {
-            "transactions":  enriched,
-            "current_idx":   0,
-            "saved_count":   0,
-            "skipped_count": 0,
-        }
-        duplicate_count = sum(1 for t in enriched if t["is_duplicate"])
-        new_count       = len(enriched) - duplicate_count
-        await message.answer(
-            f"✅ <b>Скриншот распознан!</b>\n"
-            f"📄 Транзакций: {len(enriched)}\n"
-            f"🆕 Новых: {new_count}\n"
-            f"⚠️ Возможных дубликатов: {duplicate_count}\n"
-            "Что делаем?",
-            parse_mode="HTML", reply_markup=pdf_action_kb()
-        )
+            tx = transactions[0]
+            await _send_single_tx(message, tx)
+        else:
+            existing = get_existing_transactions()
+            await message.answer(f"📊 Найдено {len(transactions)} транзакций. Определяю статьи...")
+            article_results = guess_articles_batch(transactions)
+            enriched = _enrich_transactions(transactions, article_results, existing)
+            _store_session(message.from_user.id, enriched)
+            await _send_session_summary(message, enriched, "Скриншот")
     except Exception as e:
         logging.error(f"Ошибка обработки скриншота: {e}")
         await message.answer(f"❌ Ошибка: {e}", reply_markup=main_menu_kb())
 
-# ============================================================
-# Обработка SMS текстом в боте
-# ============================================================
-@dp.message_handler(
-    lambda m: m.text and len(m.text) > 20 and any(
-        w in m.text.lower() for w in ["списано", "зачислено", "покупка", "оплата", "перевод", "баланс", "карта"]
-    ),
-    state=TransactionForm.waiting_for_action
-)
-async def handle_sms_text(message: types.Message, state: FSMContext):
-    if ALLOWED_IDS and message.from_user.id not in ALLOWED_IDS:
-        return
-    await message.answer("📱 Похоже на банковское SMS, разбираю через Gemini...")
-    tx = parse_sms_transaction(message.text)
-    if not tx:
-        await message.answer("❌ Не смог распознать транзакцию. Попробуйте ➕ Новая транзакция.")
-        return
-    amount    = float(tx.get("amount", 0))
-    currency  = tx.get("currency", "RUB")
-    merchant  = tx.get("merchant", "SMS")
-    card      = tx.get("card", "")
-    tx_type_w = tx.get("tx_type", "Расход")
-    date      = tx.get("date") or datetime.now().strftime("%d.%m.%Y, %H:%M")
-    rate      = get_cbr_rate(currency)
+async def _send_single_tx(message: types.Message, tx: dict):
+    """Отображает одну транзакцию с inline-кнопками выбора статьи."""
+    amount     = float(tx.get("amount", 0))
+    currency   = tx.get("currency", "RUB")
+    merchant   = tx.get("merchant", "")
+    card       = tx.get("card", "")
+    tx_type_w  = tx.get("tx_type", "Расход")
+    date_raw   = tx.get("date", "")
+    date       = date_raw if date_raw else datetime.now().strftime("%d.%m.%Y, %H:%M")
+    hint       = tx.get("category_hint", "")
+    rate       = get_cbr_rate(currency)
     amount_rub = round(amount * rate, 2)
-    symbol    = CURRENCY_SYMBOLS.get(currency, currency)
-    tx_icon   = "💰" if tx_type_w == "Доход" else "💸"
-    article, table_name = guess_article(merchant, amount, tx_type=tx_type_w)
+    symbol     = CURRENCY_SYMBOLS.get(currency, currency)
+    tx_icon    = "💰" if tx_type_w == "Доход" else "💸"
+    article, table_name = guess_article(merchant, amount, tx_type=tx_type_w, hint=hint)
     tx_id = str(uuid.uuid4())[:8]
     pending_transactions[tx_id] = {
         "a": amount, "m": merchant, "c": card, "d": date,
         "cur": currency, "rate": rate, "a_rub": amount_rub,
         "tx_type": tx_type_w, "article": article, "table_name": table_name,
     }
-    user_id = message.from_user.id
-    drafts_add(user_id, {
+    drafts_add(message.from_user.id, {
         "id": str(uuid.uuid4())[:8], "a": amount, "m": merchant, "c": card, "d": date,
         "cur": currency, "rate": rate, "a_rub": amount_rub, "tx_type": tx_type_w,
     })
@@ -1979,20 +1973,63 @@ async def handle_sms_text(message: types.Message, state: FSMContext):
         types.InlineKeyboardButton("📋 Все статьи", callback_data=f"wb|{tx_id}"),
         types.InlineKeyboardButton("❌ Пропустить",  callback_data="wb|no")
     )
-    preview = f"📱 <b>SMS распознано:</b>\n{tx_icon} {tx_type_w}\n💵 {amount:,.2f} {symbol}"
-    if currency != "RUB":
-        preview += f"\n🔄 {amount_rub:,.2f} ₽"
-    preview += (
-        f"\n🏪 {merchant}\n💳 {card}\n📅 {date}\n"
-        f"📂 Таблица: <b>{table_name}</b>\n📋 Статья: <b>{article}</b>\n"
+    hint_line = f"\n💡 Банк: <i>{hint}</i>" if hint else ""
+    preview = (
+        f"📸 <b>Распознано:</b>\n"
+        f"{tx_icon} {tx_type_w}\n"
+        f"💵 {amount:,.2f} {symbol}\n"
+        f"🏪 {merchant}\n"
+        f"💳 {card}\n"
+        f"📅 {date}{hint_line}\n"
+        f"📂 <b>{table_name}</b> → <b>{article}</b>\n"
         f"Подтвердите или выберите другую:"
     )
     await message.answer(preview, parse_mode="HTML", reply_markup=kb)
 
 # ============================================================
+# Обработка SMS текстом в боте
+# ============================================================
+@dp.message_handler(
+    lambda m: m.text and len(m.text) > 20 and any(
+        w in m.text.lower() for w in ["списано", "зачислено", "покупка", "оплата", "перевод", "баланс", "карта", "тенге", "рублей"]
+    ),
+    state=TransactionForm.waiting_for_action
+)
+async def handle_sms_text(message: types.Message, state: FSMContext):
+    if ALLOWED_IDS and message.from_user.id not in ALLOWED_IDS:
+        return
+    await message.answer("📱 Похоже на банковское SMS, разбираю через Gemini...")
+    tx = parse_sms_transaction(message.text)
+    if not tx:
+        await message.answer("❌ Не смог распознать транзакцию. Попробуйте ➕ Новая транзакция.")
+        return
+    await _send_single_tx(message, tx)
+
+# ============================================================
 # Flask webhook — транзакция с iPhone Shortcut
 # ============================================================
 app = Flask(__name__)
+
+def _send_tg(chat_id, text, kb=None):
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+    if kb:
+        payload["reply_markup"] = kb.to_python()
+    requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json=payload)
+
+def _build_quick_kb(tx_id, article, table_name, tx_type_w):
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton(f"🤖 {table_name} → {article}", callback_data=f"wbq|{tx_id}|{article}|{table_name}"))
+    if tx_type_w == "Расход":
+        alts = [a for a in EXPENSE_BY_TABLE.get(table_name, []) if a != article][:3]
+    else:
+        alts = [a for a in INCOME_BY_TABLE.get(table_name, []) if a != article][:3]
+    for alt in alts:
+        kb.add(types.InlineKeyboardButton(alt, callback_data=f"wbq|{tx_id}|{alt}|{table_name}"))
+    kb.add(
+        types.InlineKeyboardButton("📋 Все статьи", callback_data=f"wb|{tx_id}"),
+        types.InlineKeyboardButton("❌ Пропустить",  callback_data="wb|no")
+    )
+    return kb
 
 @app.route("/webhook/transaction", methods=["POST"])
 def webhook_transaction():
@@ -2004,21 +2041,14 @@ def webhook_transaction():
         amount    = float(data.get("amount", 0))
         currency  = data.get("currency", "RUB")
         merchant  = data.get("merchant", "Неизвестно")
-        card      = data.get("card", "Неизвестно")
+        card      = data.get("card", "")
         date      = data.get("date", datetime.now().strftime("%d.%m.%Y, %H:%M"))
         tx_type_w = data.get("tx_type", "Расход")
-        rate       = get_cbr_rate(currency)
+        rate      = get_cbr_rate(currency)
         amount_rub = round(amount * rate, 2)
-        symbol     = CURRENCY_SYMBOLS.get(currency, currency)
+        symbol    = CURRENCY_SYMBOLS.get(currency, currency)
+        icon      = "💰" if tx_type_w == "Доход" else "💸"
         article, table_name = guess_article(merchant, amount, tx_type=tx_type_w)
-        ai_label = f"{table_name} → {article}"
-        message_text = f"🔔 <b>Новая транзакция:</b>\n💰 Сумма: {amount:,.2f} {symbol}\n"
-        if currency != "RUB":
-            message_text += f"🔄 В рублях: {amount_rub:,.2f} ₽\n"
-        message_text += (
-            f"🏪 Место: {merchant}\n💳 Карта: {card}\n📅 Дата: {date}\n"
-            f"🤖 AI: {ai_label}\nЗаписать?"
-        )
         tx_id   = str(uuid.uuid4())[:8]
         uid_int = int(user_id)
         pending_transactions[tx_id] = {
@@ -2030,24 +2060,15 @@ def webhook_transaction():
             "id": str(uuid.uuid4())[:8], "a": amount, "m": merchant, "c": card, "d": date,
             "cur": currency, "rate": rate, "a_rub": amount_rub, "tx_type": tx_type_w,
         })
-        kb = types.InlineKeyboardMarkup(row_width=1)
-        kb.add(types.InlineKeyboardButton(f"🤖 {ai_label}", callback_data=f"wbq|{tx_id}|{article}|{table_name}"))
-        if tx_type_w == "Расход":
-            alts = [a for a in EXPENSE_BY_TABLE.get(table_name, []) if a != article][:3]
-        else:
-            alts = [a for a in INCOME_BY_TABLE.get(table_name, []) if a != article][:3]
-        for alt in alts:
-            kb.add(types.InlineKeyboardButton(alt, callback_data=f"wbq|{tx_id}|{alt}|{table_name}"))
-        kb.add(
-            types.InlineKeyboardButton("📋 Все статьи", callback_data=f"wb|{tx_id}"),
-            types.InlineKeyboardButton("❌ Пропустить",  callback_data="wb|no")
+        text = (
+            f"🔔 <b>Новая транзакция:</b>\n{icon} {tx_type_w}\n"
+            f"💰 {amount:,.2f} {symbol}"
+            + (f"\n🔄 {amount_rub:,.2f} ₽" if currency != "RUB" else "")
+            + f"\n🏪 {merchant}\n💳 {card}\n📅 {date}\n"
+            f"🤖 {table_name} → {article}\nЗаписать?"
         )
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json={
-            "chat_id":      user_id,
-            "text":         message_text,
-            "parse_mode":   "HTML",
-            "reply_markup": kb.to_python(),
-        })
+        kb = _build_quick_kb(tx_id, article, table_name, tx_type_w)
+        _send_tg(user_id, text, kb)
         return jsonify({"status": "ok"}), 200
     except Exception as e:
         logging.error(f"Ошибка webhook: {e}")
@@ -2079,16 +2100,8 @@ def webhook_sms():
         rate      = get_cbr_rate(currency)
         amount_rub = round(amount * rate, 2)
         symbol    = CURRENCY_SYMBOLS.get(currency, currency)
-        tx_icon   = "💰" if tx_type_w == "Доход" else "💸"
+        icon      = "💰" if tx_type_w == "Доход" else "💸"
         article, table_name = guess_article(merchant, amount, tx_type=tx_type_w)
-        ai_label = f"{table_name} → {article}"
-        message_text = f"📱 <b>SMS транзакция:</b>\n{tx_icon} {tx_type_w}\n💵 {amount:,.2f} {symbol}\n"
-        if currency != "RUB":
-            message_text += f"🔄 В рублях: {amount_rub:,.2f} ₽\n"
-        message_text += (
-            f"🏪 {merchant}\n💳 {card}\n📅 {date}\n"
-            f"🤖 AI: {ai_label}\nЗаписать?"
-        )
         tx_id   = str(uuid.uuid4())[:8]
         uid_int = int(user_id)
         pending_transactions[tx_id] = {
@@ -2100,28 +2113,23 @@ def webhook_sms():
             "id": str(uuid.uuid4())[:8], "a": amount, "m": merchant, "c": card, "d": date,
             "cur": currency, "rate": rate, "a_rub": amount_rub, "tx_type": tx_type_w,
         })
-        kb = types.InlineKeyboardMarkup(row_width=1)
-        kb.add(types.InlineKeyboardButton(f"🤖 {ai_label}", callback_data=f"wbq|{tx_id}|{article}|{table_name}"))
-        if tx_type_w == "Расход":
-            alts = [a for a in EXPENSE_BY_TABLE.get(table_name, []) if a != article][:3]
-        else:
-            alts = [a for a in INCOME_BY_TABLE.get(table_name, []) if a != article][:3]
-        for alt in alts:
-            kb.add(types.InlineKeyboardButton(alt, callback_data=f"wbq|{tx_id}|{alt}|{table_name}"))
-        kb.add(
-            types.InlineKeyboardButton("📋 Все статьи", callback_data=f"wb|{tx_id}"),
-            types.InlineKeyboardButton("❌ Пропустить",  callback_data="wb|no")
+        text = (
+            f"📱 <b>SMS транзакция:</b>\n{icon} {tx_type_w}\n"
+            f"💵 {amount:,.2f} {symbol}"
+            + (f"\n🔄 {amount_rub:,.2f} ₽" if currency != "RUB" else "")
+            + f"\n🏪 {merchant}\n💳 {card}\n📅 {date}\n"
+            f"🤖 {table_name} → {article}\nЗаписать?"
         )
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json={
-            "chat_id":      user_id,
-            "text":         message_text,
-            "parse_mode":   "HTML",
-            "reply_markup": kb.to_python(),
-        })
+        kb = _build_quick_kb(tx_id, article, table_name, tx_type_w)
+        _send_tg(user_id, text, kb)
         return jsonify({"status": "ok"}), 200
     except Exception as e:
         logging.error(f"Ошибка SMS webhook: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"status":"ok","model":GEMINI_MODEL,"sheet":"connected" if sh else "error"}), 200
 
 # ============================================================
 # Неизвестные сообщения
@@ -2139,10 +2147,10 @@ def run_bot():
     executor.start_polling(dp, skip_updates=True)
 
 def run_flask():
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=5000, use_reloader=False)
 
 if __name__ == "__main__":
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
-    logging.info("🚀 DizelFinance Bot запущен! (Gemini 2.5 Flash via Cloudflare Worker + XLSX Support)")
+    logging.info("🚀 DizelFinance Bot v2 запущен! (Gemini 2.5 Flash + Planergo Structure)")
     run_bot()
