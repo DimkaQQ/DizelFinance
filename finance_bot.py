@@ -649,55 +649,57 @@ def parse_xlsx_transactions(file_bytes: bytes) -> list:
         wb = openpyxl.load_workbook(BytesIO(file_bytes), data_only=True)
         ws = wb.active
 
-        # Найти строку с заголовками (ищем строку где есть "Дата")
-        header_row = None
-        for i, row in enumerate(ws.iter_rows(values_only=True)):
-            row_str = [str(c).strip() if c else "" for c in row]
-            if any("дата" in c.lower() for c in row_str if c):
-                header_row = i
-                break
-
-        if header_row is None:
-            logging.error("Не найдена строка заголовков в XLSX")
-            return []
-
-        # Собираем CSV начиная с заголовка
-        rows = list(ws.iter_rows(values_only=True))
-        csv_lines = []
-        for row in rows[header_row:header_row + 200]:
-            cleaned = []
+        # Собираем ВСЕ непустые строки в текст
+        lines = []
+        for row in ws.iter_rows(values_only=True):
+            cells = []
             for c in row:
-                val = str(c).strip() if c is not None else ""
-                # Убираем неразрывные пробелы и лишние символы
-                val = val.replace("\xa0", "").replace(",", ".")
-                cleaned.append(val)
-            # Берём только непустые строки
-            if any(v for v in cleaned):
-                csv_lines.append(" | ".join(cleaned))
+                val = str(c).replace('\xa0', ' ').strip() if c is not None else ''
+                cells.append(val)
+            # Берём строку только если есть хоть 2 непустые ячейки
+            non_empty = [v for v in cells if v]
+            if len(non_empty) >= 2:
+                lines.append(' | '.join(non_empty))
 
-        csv_text = "\n".join(csv_lines[:150])
-
-        prompt = (
-            "Это банковская выписка. Извлеки ВСЕ транзакции.\n"
-            f"Данные:\n{csv_text}\n\n"
-            "Для каждой транзакции верни:\n"
-            "- date: ДД.ММ.ГГГГ\n"
-            "- amount: число положительное\n"
-            "- currency: RUB/USD/EUR/KZT\n"
-            "- merchant: описание из колонки 'Описание'\n"
-            "- card: пустая строка если нет\n"
-            "- tx_type: 'Расход' если сумма отрицательная, 'Доход' если положительная\n"
-            "- category_hint: категория из колонки 'Категория' если есть\n"
-            "Ответ ТОЛЬКО JSON массивом:\n"
-            '[{"date":"01.10.2025","amount":1500.0,"currency":"RUB","merchant":"Пятёрочка","card":"","tx_type":"Расход","category_hint":"Продукты"}]\n'
-            "Игнорируй: строки с балансом, итогами, заголовками. Если нет транзакций — []."
-        )
-        result = ask_gemini(prompt)
-        transactions = extract_json(result)
-        if not isinstance(transactions, list):
+        if not lines:
             return []
-        logging.info(f"XLSX: найдено {len(transactions)} транзакций")
-        return transactions
+
+        # Отправляем по частям если файл большой (Gemini ~8000 токенов)
+        chunk_size = 150
+        all_transactions = []
+
+        for i in range(0, len(lines), chunk_size):
+            chunk = '\n'.join(lines[i:i + chunk_size])
+            prompt = (
+                "Это фрагмент банковской выписки (любой банк, любой формат).\n"
+                f"Данные:\n{chunk}\n\n"
+                "Найди ВСЕ транзакции. Для каждой верни:\n"
+                "- date: ДД.ММ.ГГГГ\n"
+                "- amount: положительное число\n"
+                "- currency: RUB/USD/EUR/KZT (по умолчанию RUB)\n"
+                "- merchant: название магазина/места/получателя (коротко)\n"
+                "- card: номер карты или пустая строка\n"
+                "- tx_type: 'Расход' если сумма со знаком минус или это списание, "
+                "'Доход' если пополнение/зачисление\n"
+                "- category_hint: категория если указана, иначе пустая строка\n"
+                "Ответ ТОЛЬКО JSON массивом:\n"
+                '[{"date":"09.10.2025","amount":1850.0,"currency":"RUB",'
+                '"merchant":"Пятёрочка","card":"","tx_type":"Расход","category_hint":"Продукты"}]\n'
+                "Игнорируй: заголовки, балансы, итоги, реквизиты счёта.\n"
+                "Если транзакций нет — []."
+            )
+            try:
+                result = ask_gemini(prompt)
+                parsed = extract_json(result)
+                if isinstance(parsed, list):
+                    all_transactions.extend(parsed)
+            except Exception as e:
+                logging.error(f"Ошибка парсинга чанка {i}: {e}")
+                continue
+
+        logging.info(f"XLSX: найдено {len(all_transactions)} транзакций")
+        return all_transactions
+
     except Exception as e:
         logging.error(f"Ошибка парсинга XLSX: {e}")
         return []
