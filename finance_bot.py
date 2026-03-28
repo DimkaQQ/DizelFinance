@@ -700,16 +700,27 @@ def parse_xlsx_transactions(file_bytes: bytes) -> list:
             try:
                 # no_cache=True — разные файлы не должны кэшироваться
                 result = ask_gemini(prompt, no_cache=True)
-                logging.info(f"XLSX chunk {i}: RAW len={len(result)}")
+                logging.info(f"XLSX chunk {i}: RAW len={len(result)}, preview={result[:300]}")
                 parsed = extract_json(result)
                 logging.info(f"XLSX chunk {i}: parsed type={type(parsed).__name__}")
-                if isinstance(parsed, list):
+
+                # Если Gemini вернул {"transactions": [...]} или любой dict с массивом внутри
+                if isinstance(parsed, dict):
+                    # Ищем первый список среди значений
+                    found_list = None
+                    for v in parsed.values():
+                        if isinstance(v, list):
+                            found_list = v
+                            break
+                    if found_list is not None:
+                        logging.info(f"XLSX chunk {i}: извлекли список из dict, {len(found_list)} транзакций")
+                        all_transactions.extend(found_list)
+                    else:
+                        logging.warning(f"XLSX chunk {i}: dict без списка внутри, оборачиваем")
+                        all_transactions.append(parsed)
+                elif isinstance(parsed, list):
                     all_transactions.extend(parsed)
                     logging.info(f"XLSX chunk {i}: добавлено {len(parsed)} транзакций")
-                elif isinstance(parsed, dict):
-                    # Gemini вернул один объект вместо массива
-                    all_transactions.append(parsed)
-                    logging.warning(f"XLSX chunk {i}: Gemini вернул dict, оборачиваем в list")
                 else:
                     logging.warning(f"XLSX chunk {i}: неожиданный тип {type(parsed)}")
             except Exception as e:
