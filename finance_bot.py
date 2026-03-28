@@ -304,7 +304,7 @@ def ask_gemini(prompt: str, image_bytes: bytes = None,
     for attempt in range(5):
         try:
             resp = requests.post(
-                "https://api.anthropic.com/v1/messages",
+                "https://gemini-proxy.dimash210775.workers.dev/claude/v1/messages",
                 json=payload,
                 headers=headers,
                 timeout=90
