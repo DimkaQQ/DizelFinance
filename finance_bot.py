@@ -244,67 +244,86 @@ def extract_json(text: str):
     return json.loads(text)
 
 # ============================================================
-# Gemini API через Cloudflare Worker
-# ИСПРАВЛЕНО: добавлен параметр no_cache для XLSX/SMS
+# Claude API — замена Gemini
+# Добавь в .env: ANTHROPIC_API_KEY=sk-ant-...
 # ============================================================
 def ask_gemini(prompt: str, image_bytes: bytes = None,
                mime_type: str = "image/jpeg", no_cache: bool = False) -> str:
+    """
+    Функция переименована для совместимости, но теперь использует Claude API.
+    Модель: claude-haiku-4-5-20251001 (быстрая и дешёвая).
+    """
     import hashlib
+
+    ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+    CLAUDE_MODEL      = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+
     # Кэш только для текстовых запросов без флага no_cache
     cache_key  = hashlib.md5(prompt.encode()).hexdigest() if (not image_bytes and not no_cache) else None
-    cache_file = f"/tmp/gemini_cache_{cache_key}.json" if cache_key else None
+    cache_file = f"/tmp/claude_cache_{cache_key}.json" if cache_key else None
 
     if cache_file and os.path.exists(cache_file):
         try:
             with open(cache_file, encoding="utf-8") as f:
                 cached_val = json.load(f)
-                logging.info("Gemini cache HIT")
+                logging.info("Claude cache HIT")
                 return cached_val
         except Exception:
             pass
 
-    parts = []
+    # Формируем сообщение
+    content = []
     if image_bytes:
-        parts.append({
-            "inline_data": {
-                "mime_type": mime_type,
+        content.append({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": mime_type,
                 "data": base64.b64encode(image_bytes).decode("utf-8")
             }
         })
-    parts.append({"text": prompt})
+    content.append({
+        "type": "text",
+        "text": prompt
+    })
 
     payload = {
-        "contents": [{"parts": parts}],
-        "generationConfig": {
-            "temperature": 0.1,
-            "maxOutputTokens": 8000,
-        }
+        "model": CLAUDE_MODEL,
+        "max_tokens": 8000,
+        "messages": [
+            {"role": "user", "content": content}
+        ]
     }
 
-    url = f"{CLOUDFLARE_PROXY}/proxy/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+    headers = {
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json"
+    }
 
     for attempt in range(5):
         try:
-            resp = requests.post(url, json=payload, timeout=90)
+            resp = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                json=payload,
+                headers=headers,
+                timeout=90
+            )
             if resp.status_code == 200:
                 data = resp.json()
-                parts_list = data["candidates"][0]["content"]["parts"]
-                text = ""
-                for part in parts_list:
-                    if "text" in part:
-                        text = part["text"].strip()
+                text = data["content"][0]["text"].strip()
                 if cache_file:
                     with open(cache_file, "w", encoding="utf-8") as f:
                         json.dump(text, f, ensure_ascii=False)
                 return text
             else:
-                logging.warning(f"Gemini error {resp.status_code}: {resp.text[:300]}")
+                logging.warning(f"Claude error {resp.status_code}: {resp.text[:300]}")
                 _time_module.sleep(5 * (attempt + 1))
         except Exception as e:
-            logging.error(f"Gemini exception (attempt {attempt + 1}): {e}")
+            logging.error(f"Claude exception (attempt {attempt + 1}): {e}")
             _time_module.sleep(5 * (attempt + 1))
 
-    raise ValueError("Не удалось получить ответ от Gemini после 5 попыток")
+    raise ValueError("Не удалось получить ответ от Claude после 5 попыток")
 
 # ============================================================
 # МАППИНГ СТАТЕЙ → ТАБЛИЦА
