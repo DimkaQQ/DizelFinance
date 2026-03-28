@@ -664,11 +664,6 @@ def parse_pdf_transactions(pdf_base64: str) -> list:
         return []
 
 def parse_xlsx_transactions(file_bytes: bytes) -> list:
-    """
-    Парсит xlsx выписку банка.
-    ИСПРАВЛЕНО: no_cache=True чтобы не кэшировать разные файлы,
-    правильная обработка list/dict из extract_json.
-    """
     if not openpyxl:
         logging.error("openpyxl не установлен")
         return []
@@ -676,77 +671,75 @@ def parse_xlsx_transactions(file_bytes: bytes) -> list:
         wb = openpyxl.load_workbook(BytesIO(file_bytes), data_only=True)
         ws = wb.active
 
-        # Собираем ВСЕ непустые строки в текст
-        lines = []
-        for row in ws.iter_rows(values_only=True):
-            cells = []
-            for c in row:
-                val = str(c).replace('\xa0', ' ').strip() if c is not None else ''
-                cells.append(val)
-            non_empty = [v for v in cells if v]
-            if len(non_empty) >= 2:
-                lines.append(' | '.join(non_empty))
+        # Найти строку заголовков
+        header_row = None
+        for i, row in enumerate(ws.iter_rows(values_only=True)):
+            row_str = [str(c).strip() if c else '' for c in row]
+            if any('дата операции' in c.lower() for c in row_str if c):
+                header_row = i
+                break
 
-        if not lines:
-            logging.warning("XLSX: не найдено непустых строк")
+        if header_row is None:
+            logging.error("XLSX: не найдена строка заголовков")
             return []
 
-        logging.info(f"XLSX: всего строк для анализа: {len(lines)}")
+        # Конвертируем в чистый CSV — только 4 нужные колонки
+        rows = list(ws.iter_rows(values_only=True))
+        csv_lines = ["date|category|description|amount"]
+        for row in rows[header_row + 1:]:
+            cells = [str(c).replace('\xa0', ' ').strip() if c else '' for c in row]
+            if len(cells) < 13:
+                continue
+            date_val = cells[0]
+            category = cells[4]
+            desc     = cells[11]
+            amount   = cells[12].replace(' ', '')
+            if not date_val or not amount:
+                continue
+            import re
+            if not re.match(r'\d{2}\.\d{2}\.\d{4}', date_val):
+                continue
+            # Экранируем разделитель в описании
+            desc_clean = desc.replace('|', ' ').replace('\n', ' ')[:100]
+            csv_lines.append(f"{date_val}|{category}|{desc_clean}|{amount}")
 
-        chunk_size = 150
+        logging.info(f"XLSX: конвертировано в CSV, строк: {len(csv_lines)-1}")
+
+        # Отправляем в Claude чанками по 60 транзакций
         all_transactions = []
+        chunk_size = 60
+        data_lines = csv_lines[1:]  # без заголовка
 
-        for i in range(0, len(lines), chunk_size):
-            chunk = '\n'.join(lines[i:i + chunk_size])
+        for i in range(0, len(data_lines), chunk_size):
+            chunk = "date|category|description|amount\n" + '\n'.join(data_lines[i:i + chunk_size])
             prompt = (
-                "Это фрагмент банковской выписки (любой банк, любой формат).\n"
+                "Это CSV банковской выписки. Колонки: дата|категория|описание|сумма.\n"
+                "Отрицательная сумма = Расход, положительная = Доход.\n"
                 f"Данные:\n{chunk}\n\n"
-                "Найди ВСЕ транзакции. Для каждой верни:\n"
-                "- date: ДД.ММ.ГГГГ\n"
-                "- amount: положительное число\n"
-                "- currency: RUB/USD/EUR/KZT (по умолчанию RUB)\n"
-                "- merchant: название магазина/места/получателя (коротко)\n"
-                "- card: номер карты или пустая строка\n"
-                "- tx_type: 'Расход' если сумма со знаком минус или это списание, "
-                "'Доход' если пополнение/зачисление\n"
-                "- category_hint: категория если указана, иначе пустая строка\n"
-                "Ответ ТОЛЬКО JSON массивом без пояснений и без markdown:\n"
-                '[{"date":"09.10.2025","amount":1850.0,"currency":"RUB",'
-                '"merchant":"Пятёрочка","card":"","tx_type":"Расход","category_hint":"Продукты"}]\n'
-                "Игнорируй: заголовки, балансы, итоги, реквизиты счёта.\n"
-                "Если транзакций нет — верни пустой массив []."
+                "Извлеки название места из колонки описание "
+                "(после 'место совершения операции:' если есть, иначе первые слова описания).\n"
+                "Верни ТОЛЬКО JSON массив без markdown:\n"
+                '[{"date":"09.10.2025","amount":1850.0,"currency":"RUB","merchant":"LTD ELEVATOR","card":"7651","tx_type":"Расход","category_hint":"Прочие операции"}]\n'
+                "Если транзакций нет — []."
             )
             try:
-                # no_cache=True — разные файлы не должны кэшироваться
                 result = ask_gemini(prompt, no_cache=True)
-                logging.info(f"XLSX chunk {i}: RAW len={len(result)}, preview={result[:300]}")
+                logging.info(f"XLSX chunk {i}: RAW len={len(result)}")
                 parsed = extract_json(result)
-                logging.info(f"XLSX chunk {i}: parsed type={type(parsed).__name__}")
-
-                # Если Gemini вернул {"transactions": [...]} или любой dict с массивом внутри
-                if isinstance(parsed, dict):
-                    # Ищем первый список среди значений
-                    found_list = None
+                logging.info(f"XLSX chunk {i}: type={type(parsed).__name__}")
+                if isinstance(parsed, list):
+                    all_transactions.extend(parsed)
+                    logging.info(f"XLSX chunk {i}: +{len(parsed)} транзакций")
+                elif isinstance(parsed, dict):
                     for v in parsed.values():
                         if isinstance(v, list):
-                            found_list = v
+                            all_transactions.extend(v)
                             break
-                    if found_list is not None:
-                        logging.info(f"XLSX chunk {i}: извлекли список из dict, {len(found_list)} транзакций")
-                        all_transactions.extend(found_list)
-                    else:
-                        logging.warning(f"XLSX chunk {i}: dict без списка внутри, оборачиваем")
-                        all_transactions.append(parsed)
-                elif isinstance(parsed, list):
-                    all_transactions.extend(parsed)
-                    logging.info(f"XLSX chunk {i}: добавлено {len(parsed)} транзакций")
-                else:
-                    logging.warning(f"XLSX chunk {i}: неожиданный тип {type(parsed)}")
             except Exception as e:
-                logging.error(f"Ошибка парсинга чанка {i}: {e}")
+                logging.error(f"XLSX chunk {i} ошибка: {e}")
                 continue
 
-        logging.info(f"XLSX: итого найдено {len(all_transactions)} транзакций")
+        logging.info(f"XLSX: итого {len(all_transactions)} транзакций")
         return all_transactions
 
     except Exception as e:
