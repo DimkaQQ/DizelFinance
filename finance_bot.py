@@ -236,6 +236,23 @@ def extract_json(text: str):
             return json.loads(text[brace_pos:end + 1])
     
     return json.loads(text)
+    # ВАЖНО: сначала ищем массив [, потом объект {
+    bracket_pos = text.find('[')
+    brace_pos = text.find('{')
+    
+    # Если есть массив и он идёт раньше объекта (или объекта нет)
+    if bracket_pos != -1 and (brace_pos == -1 or bracket_pos < brace_pos):
+        end = find_matching_end(text, bracket_pos, '[', ']')
+        if end != -1:
+            return json.loads(text[bracket_pos:end + 1])
+    
+    # Иначе ищем объект
+    if brace_pos != -1:
+        end = find_matching_end(text, brace_pos, '{', '}')
+        if end != -1:
+            return json.loads(text[brace_pos:end + 1])
+    
+    return json.loads(text)
 # ============================================================
 # Gemini API через Cloudflare Worker
 # ============================================================
