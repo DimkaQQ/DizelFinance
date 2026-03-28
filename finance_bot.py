@@ -642,36 +642,55 @@ def parse_pdf_transactions(pdf_base64: str) -> list:
         return []
 
 def parse_xlsx_transactions(file_bytes: bytes) -> list:
-    """Парсит xlsx выписку банка через openpyxl + Gemini"""
     if not openpyxl:
         logging.error("openpyxl не установлен")
         return []
     try:
         wb = openpyxl.load_workbook(BytesIO(file_bytes), data_only=True)
         ws = wb.active
-        rows = []
-        for row in ws.iter_rows(values_only=True):
-            row_text = [str(c).strip() if c is not None else "" for c in row]
-            if any(cell for cell in row_text):
-                rows.append(row_text)
-        if not rows:
+
+        # Найти строку с заголовками (ищем строку где есть "Дата")
+        header_row = None
+        for i, row in enumerate(ws.iter_rows(values_only=True)):
+            row_str = [str(c).strip() if c else "" for c in row]
+            if any("дата" in c.lower() for c in row_str if c):
+                header_row = i
+                break
+
+        if header_row is None:
+            logging.error("Не найдена строка заголовков в XLSX")
             return []
-        header_str = "\n".join([" | ".join(r) for r in rows[:3]])
-        data_str   = "\n".join([" | ".join(r) for r in rows[3:103]])
+
+        # Собираем CSV начиная с заголовка
+        rows = list(ws.iter_rows(values_only=True))
+        csv_lines = []
+        for row in rows[header_row:header_row + 200]:
+            cleaned = []
+            for c in row:
+                val = str(c).strip() if c is not None else ""
+                # Убираем неразрывные пробелы и лишние символы
+                val = val.replace("\xa0", "").replace(",", ".")
+                cleaned.append(val)
+            # Берём только непустые строки
+            if any(v for v in cleaned):
+                csv_lines.append(" | ".join(cleaned))
+
+        csv_text = "\n".join(csv_lines[:150])
+
         prompt = (
-            "Это банковская выписка в формате таблицы.\n"
-            f"Заголовок:\n{header_str}\nДанные:\n{data_str}\n"
-            "Извлеки ВСЕ транзакции. Для каждой верни:\n"
+            "Это банковская выписка. Извлеки ВСЕ транзакции.\n"
+            f"Данные:\n{csv_text}\n\n"
+            "Для каждой транзакции верни:\n"
             "- date: ДД.ММ.ГГГГ\n"
-            "- amount: число (положительное)\n"
+            "- amount: число положительное\n"
             "- currency: RUB/USD/EUR/KZT\n"
-            "- merchant: название места или описание\n"
-            "- card: карта если указана, иначе пустая строка\n"
-            "- tx_type: Расход или Доход\n"
-            "- category_hint: категория если указана, иначе пустая строка\n"
+            "- merchant: описание из колонки 'Описание'\n"
+            "- card: пустая строка если нет\n"
+            "- tx_type: 'Расход' если сумма отрицательная, 'Доход' если положительная\n"
+            "- category_hint: категория из колонки 'Категория' если есть\n"
             "Ответ ТОЛЬКО JSON массивом:\n"
-            '[{"date":"01.01.2024","amount":1500.0,"currency":"RUB","merchant":"Пятёрочка","card":"","tx_type":"Расход","category_hint":""}]\n'
-            "Игнорируй: балансы, итоги, заголовки. Если транзакций нет — верни []."
+            '[{"date":"01.10.2025","amount":1500.0,"currency":"RUB","merchant":"Пятёрочка","card":"","tx_type":"Расход","category_hint":"Продукты"}]\n'
+            "Игнорируй: строки с балансом, итогами, заголовками. Если нет транзакций — []."
         )
         result = ask_gemini(prompt)
         transactions = extract_json(result)
