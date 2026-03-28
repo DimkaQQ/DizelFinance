@@ -690,7 +690,9 @@ def parse_xlsx_transactions(file_bytes: bytes) -> list:
             )
             try:
                 result = ask_gemini(prompt)
+                logging.info(f"XLSX Gemini RAW: {result[:500]}")
                 parsed = extract_json(result)
+                logging.info(f"XLSX parsed: {parsed}")
                 if isinstance(parsed, list):
                     all_transactions.extend(parsed)
             except Exception as e:
