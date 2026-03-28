@@ -685,7 +685,7 @@ def parse_xlsx_transactions(file_bytes: bytes) -> list:
 
         # Конвертируем в чистый CSV — только 4 нужные колонки
         rows = list(ws.iter_rows(values_only=True))
-        csv_lines = ["date|category|description|amount"]
+        csv_lines = ["date|category|merchant|amount"]
         for row in rows[header_row + 1:]:
             cells = [str(c).replace('\xa0', ' ').strip() if c else '' for c in row]
             if len(cells) < 13:
@@ -700,7 +700,13 @@ def parse_xlsx_transactions(file_bytes: bytes) -> list:
             if not re.match(r'\d{2}\.\d{2}\.\d{4}', date_val):
                 continue
             # Экранируем разделитель в описании
-            desc_clean = desc.replace('|', ' ').replace('\n', ' ')[:100]
+            # Извлекаем название места из описания сами
+            import re as _re
+            place_match = _re.search(r'место совершения операции:[^,]+/([^,\n]+?)(?:,|$|\s+MCC)', desc, _re.IGNORECASE)
+            if place_match:
+                desc_clean = place_match.group(1).strip()[:50]
+            else:
+                desc_clean = desc.replace('|', ' ').replace('\n', ' ')[:50]
             csv_lines.append(f"{date_val}|{category}|{desc_clean}|{amount}")
 
         logging.info(f"XLSX: конвертировано в CSV, строк: {len(csv_lines)-1}")
@@ -713,15 +719,13 @@ def parse_xlsx_transactions(file_bytes: bytes) -> list:
         for i in range(0, len(data_lines), chunk_size):
             chunk = "date|category|description|amount\n" + '\n'.join(data_lines[i:i + chunk_size])
             prompt = (
-                "Это CSV банковской выписки. Колонки: дата|категория|описание|сумма.\n"
+                "Это CSV банковской выписки. Колонки: дата|категория|merchant|сумма.\n"
+                "Колонка merchant уже содержит готовое название места/магазина.\n"
                 "Отрицательная сумма = Расход, положительная = Доход.\n"
                 f"Данные:\n{chunk}\n\n"
-                "Из колонки описание извлеки название места/магазина:\n"
-                "- Если есть 'место совершения операции: RU/ГОРОД/НАЗВАНИЕ' — бери только НАЗВАНИЕ (последняя часть после последнего /)\n"
-                "- Если нет такой фразы — бери первые значимые слова описания\n"
-                "- НИКОГДА не пиши Unknown или пустую строку — всегда извлекай хоть что-то\n"
                 "Верни ТОЛЬКО JSON массив без markdown:\n"
-                '[{"date":"09.10.2025","amount":1850.0,"currency":"RUB","merchant":"LTD ELEVATOR","card":"7651","tx_type":"Расход","category_hint":"Прочие операции"}]\n'
+                '[{"date":"09.10.2025","amount":1850.0,"currency":"RUB","merchant":"PARKING","card":"9560","tx_type":"Расход","category_hint":"Прочие операции"}]\n'
+                "card — последние 4 цифры из категории если есть, иначе пустая строка.\n"
                 "Если транзакций нет — []."
             )
             try:
