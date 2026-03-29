@@ -704,7 +704,7 @@ def parse_xlsx_transactions(file_bytes: bytes) -> list:
                 continue
 
             # Извлекаем карту из описания
-            card_match = re.search(r'(\d{4})\b', desc)
+            card_match = re.search(r'\*+(\d{4})', desc)
             card = card_match.group(1) if card_match else ''
 
             # Извлекаем merchant из описания
