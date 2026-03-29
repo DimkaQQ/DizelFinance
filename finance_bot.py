@@ -683,70 +683,55 @@ def parse_xlsx_transactions(file_bytes: bytes) -> list:
             logging.error("XLSX: не найдена строка заголовков")
             return []
 
-        # Конвертируем в чистый CSV — только 4 нужные колонки
         rows = list(ws.iter_rows(values_only=True))
-        csv_lines = ["date|category|merchant|amount"]
+        transactions = []
+
         for row in rows[header_row + 1:]:
             cells = [str(c).replace('\xa0', ' ').strip() if c else '' for c in row]
             if len(cells) < 13:
                 continue
             date_val = cells[0]
-            category = cells[4]
-            desc     = cells[11]
-            amount   = cells[12].replace(' ', '')
-            if not date_val or not amount:
-                continue
-            import re
             if not re.match(r'\d{2}\.\d{2}\.\d{4}', date_val):
                 continue
-            # Экранируем разделитель в описании
-            # Извлекаем название места из описания сами
-            import re as _re
-            place_match = _re.search(r'место совершения операции:[^,]+/([^,\n]+?)(?:,|$|\s+MCC)', desc, _re.IGNORECASE)
-            if place_match:
-                desc_clean = place_match.group(1).strip()[:50]
-            else:
-                desc_clean = desc.replace('|', ' ').replace('\n', ' ')[:50]
-            csv_lines.append(f"{date_val}|{category}|{desc_clean}|{amount}")
-
-        logging.info(f"XLSX: конвертировано в CSV, строк: {len(csv_lines)-1}")
-
-        # Отправляем в Claude чанками по 60 транзакций
-        all_transactions = []
-        chunk_size = 60
-        data_lines = csv_lines[1:]  # без заголовка
-
-        for i in range(0, len(data_lines), chunk_size):
-            chunk = "date|category|description|amount\n" + '\n'.join(data_lines[i:i + chunk_size])
-            prompt = (
-                "Это CSV банковской выписки. Колонки: дата|категория|merchant|сумма.\n"
-                "Колонка merchant уже содержит готовое название места/магазина.\n"
-                "Отрицательная сумма = Расход, положительная = Доход.\n"
-                f"Данные:\n{chunk}\n\n"
-                "Верни ТОЛЬКО JSON массив без markdown:\n"
-                '[{"date":"09.10.2025","amount":1850.0,"currency":"RUB","merchant":"PARKING","card":"9560","tx_type":"Расход","category_hint":"Прочие операции"}]\n'
-                "card — последние 4 цифры из категории если есть, иначе пустая строка.\n"
-                "Если транзакций нет — []."
-            )
+            category = cells[4]
+            desc     = cells[11]
+            amount_str = cells[12].replace(' ', '').replace('\xa0', '').replace(',', '.')
+            if not amount_str:
+                continue
             try:
-                result = ask_gemini(prompt, no_cache=True)
-                logging.info(f"XLSX chunk {i}: RAW len={len(result)}")
-                parsed = extract_json(result)
-                logging.info(f"XLSX chunk {i}: type={type(parsed).__name__}")
-                if isinstance(parsed, list):
-                    all_transactions.extend(parsed)
-                    logging.info(f"XLSX chunk {i}: +{len(parsed)} транзакций")
-                elif isinstance(parsed, dict):
-                    for v in parsed.values():
-                        if isinstance(v, list):
-                            all_transactions.extend(v)
-                            break
-            except Exception as e:
-                logging.error(f"XLSX chunk {i} ошибка: {e}")
+                amount_float = float(amount_str)
+            except ValueError:
                 continue
 
-        logging.info(f"XLSX: итого {len(all_transactions)} транзакций")
-        return all_transactions
+            # Извлекаем карту из описания
+            card_match = re.search(r'(\d{4})\b', desc)
+            card = card_match.group(1) if card_match else ''
+
+            # Извлекаем merchant из описания
+            place_match = re.search(
+                r'место совершения операции:[^,]+/([^,\n]+?)(?:,|\s+MCC|$)',
+                desc, re.IGNORECASE
+            )
+            if place_match:
+                merchant = place_match.group(1).strip()
+            else:
+                # Для переводов и других операций берём первые слова
+                merchant = desc[:50].strip()
+
+            tx_type = 'Доход' if amount_float > 0 else 'Расход'
+
+            transactions.append({
+                'date':          date_val,
+                'amount':        abs(amount_float),
+                'currency':      'RUB',
+                'merchant':      merchant,
+                'card':          card,
+                'tx_type':       tx_type,
+                'category_hint': category,
+            })
+
+        logging.info(f"XLSX: найдено {len(transactions)} транзакций (без AI)")
+        return transactions
 
     except Exception as e:
         logging.error(f"Ошибка парсинга XLSX: {e}")
