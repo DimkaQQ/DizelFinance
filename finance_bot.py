@@ -57,7 +57,7 @@ def db_init():
     con.execute(
         "CREATE TABLE IF NOT EXISTS drafts ("
         "id TEXT PRIMARY KEY, user_id INTEGER, amount REAL, currency TEXT, "
-        "rate REAL, amount_rub REAL, card TEXT, date TEXT, merchant TEXT, "
+        "rate REAL, amount_rub REAL, date TEXT, merchant TEXT, "
         "tx_type TEXT, created_at TEXT)"
     )
     con.commit()
@@ -68,20 +68,20 @@ db_init()
 def drafts_get(user_id: int) -> list:
     con = sqlite3.connect(DB_PATH)
     rows = con.execute(
-        "SELECT id,amount,currency,rate,amount_rub,card,date,merchant,tx_type "
+        "SELECT id,amount,currency,rate,amount_rub,date,merchant,tx_type "
         "FROM drafts WHERE user_id=? ORDER BY created_at DESC",
         (user_id,)
     ).fetchall()
     con.close()
     return [{"id":r[0],"a":r[1],"cur":r[2],"rate":r[3],"a_rub":r[4],
-             "c":r[5],"d":r[6],"m":r[7],"tx_type":r[8]} for r in rows]
+             "d":r[5],"m":r[6],"tx_type":r[7]} for r in rows]
 
 def drafts_add(user_id: int, draft: dict):
     con = sqlite3.connect(DB_PATH)
     con.execute(
-        "INSERT OR REPLACE INTO drafts VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT OR REPLACE INTO drafts VALUES (?,?,?,?,?,?,?,?,?)",
         (draft["id"], user_id, draft["a"], draft["cur"], draft["rate"],
-         draft["a_rub"], draft["c"], draft["d"], draft["m"],
+         draft["a_rub"], draft["d"], draft["m"],
          draft.get("tx_type","Расход"), datetime.now().isoformat())
     )
     con.commit()
@@ -179,14 +179,8 @@ def _fetch_rate(currency: str) -> float:
 
 # ============================================================
 # Надёжный парсинг JSON из ответа Gemini
-# ИСПРАВЛЕНО: убран дубль кода, правильный приоритет [ над {
 # ============================================================
 def extract_json(text: str):
-    """
-    Извлекает JSON из текста ответа Gemini.
-    Приоритет: массив [] > объект {}.
-    Корректно обрабатывает вложенные структуры и экранирование.
-    """
     text = text.strip()
     text = re.sub(r'```json\s*', '', text)
     text = re.sub(r'```\s*', '', text)
@@ -220,45 +214,34 @@ def extract_json(text: str):
     bracket_pos = text.find('[')
     brace_pos   = text.find('{')
 
-    # Сначала ищем массив — если он идёт раньше объекта или объекта нет
     if bracket_pos != -1 and (brace_pos == -1 or bracket_pos < brace_pos):
         end = find_matching_end(text, bracket_pos, '[', ']')
         if end != -1:
             try:
-                result = json.loads(text[bracket_pos:end + 1])
-                return result
+                return json.loads(text[bracket_pos:end + 1])
             except json.JSONDecodeError as e:
                 logging.warning(f"extract_json: ошибка парсинга массива: {e}")
 
-    # Иначе ищем объект
     if brace_pos != -1:
         end = find_matching_end(text, brace_pos, '{', '}')
         if end != -1:
             try:
-                result = json.loads(text[brace_pos:end + 1])
-                return result
+                return json.loads(text[brace_pos:end + 1])
             except json.JSONDecodeError as e:
                 logging.warning(f"extract_json: ошибка парсинга объекта: {e}")
 
-    # Последняя попытка — весь текст как есть
     return json.loads(text)
 
 # ============================================================
 # Claude API — замена Gemini
-# Добавь в .env: ANTHROPIC_API_KEY=sk-ant-...
 # ============================================================
 def ask_gemini(prompt: str, image_bytes: bytes = None,
                mime_type: str = "image/jpeg", no_cache: bool = False) -> str:
-    """
-    Функция переименована для совместимости, но теперь использует Claude API.
-    Модель: claude-haiku-4-5-20251001 (быстрая и дешёвая).
-    """
     import hashlib
 
     ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
     CLAUDE_MODEL      = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 
-    # Кэш только для текстовых запросов без флага no_cache
     cache_key  = hashlib.md5(prompt.encode()).hexdigest() if (not image_bytes and not no_cache) else None
     cache_file = f"/tmp/claude_cache_{cache_key}.json" if cache_key else None
 
@@ -271,7 +254,6 @@ def ask_gemini(prompt: str, image_bytes: bytes = None,
         except Exception:
             pass
 
-    # Формируем сообщение
     content = []
     if image_bytes:
         content.append({
@@ -282,17 +264,12 @@ def ask_gemini(prompt: str, image_bytes: bytes = None,
                 "data": base64.b64encode(image_bytes).decode("utf-8")
             }
         })
-    content.append({
-        "type": "text",
-        "text": prompt
-    })
+    content.append({"type": "text", "text": prompt})
 
     payload = {
         "model": CLAUDE_MODEL,
         "max_tokens": 8000,
-        "messages": [
-            {"role": "user", "content": content}
-        ]
+        "messages": [{"role": "user", "content": content}]
     }
 
     headers = {
@@ -305,9 +282,7 @@ def ask_gemini(prompt: str, image_bytes: bytes = None,
         try:
             resp = requests.post(
                 "https://gemini-proxy.dimash210775.workers.dev/claude/v1/messages",
-                json=payload,
-                headers=headers,
-                timeout=90
+                json=payload, headers=headers, timeout=90
             )
             if resp.status_code == 200:
                 data = resp.json()
@@ -328,46 +303,84 @@ def ask_gemini(prompt: str, image_bytes: bytes = None,
 # ============================================================
 # МАППИНГ СТАТЕЙ → ТАБЛИЦА
 # ============================================================
+
+# Ключевые слова для автоопределения категории "Джулиан" (питомцы/ветеринар/зоо)
+JULIAN_KEYWORDS = [
+    "ветеринар", "ветклиника", "вет ", "зоомагазин", "зоотовары", "зоо ",
+    "petshop", "pet shop", "зоо-", "корм для", "ошейник", "поводок",
+    "лоток", "наполнитель", "аквариум", "клетка для", "veterinary",
+    "animal", "petstore", "зооуголок", "зоосалон", "груминг",
+]
+
+def is_julian_merchant(merchant: str) -> bool:
+    """Проверяет, относится ли merchant к ветеринарным/зоо тратам."""
+    m = merchant.lower()
+    return any(kw in m for kw in JULIAN_KEYWORDS)
+
 INCOME_ARTICLES = {
-    "Зарплата": "Поступления",
-    "Прочие поступления": "Поступления",
-    "Премия и бонусы": "Поступления",
+    "Зарплата":             "Поступления",
+    "Прочие поступления":   "Поступления",
+    "Премия и бонусы":      "Поступления",
     "Инвестиционный доход": "Поступления",
-    "Портфель Екатерины": "Движение активов",
-    "Портфель Влада": "Движение активов",
-    "Портфель Ланы (подушка)": "Движение активов",
-    "Пенсионный план": "Движение активов",
-    "Инвестиции в бизнес": "Движение активов",
+    # Движение активов
+    "Портфель Екатерины":       "Движение активов",
+    "Портфель Влада":           "Движение активов",
+    "Портфель Ланы (подушка)":  "Движение активов",
+    "Пенсионный план":          "Движение активов",
+    "Инвестиции в бизнес":      "Движение активов",
 }
 
 EXPENSE_ARTICLES = {
-    "Дети": "Крупные расходы",
-    "Джулиан": "Крупные расходы",
-    "Лана": "Крупные расходы",
-    "Образование": "Крупные расходы",
-    "Здоровье": "Крупные расходы",
-    "Путешествия": "Крупные расходы",
-    "Гаджеты": "Крупные расходы",
-    "Подарки": "Крупные расходы",
-    "Продукты": "Расходы",
-    "Аренда": "Расходы",
-    "Транспорт": "Расходы",
-    "Развлечения": "Расходы",
-    "Прочее": "Расходы",
+    # Крупные расходы
+    "Дети":         "Крупные расходы",
+    "Джулиан":      "Крупные расходы",
+    "Лана":         "Крупные расходы",
+    "Образование":  "Крупные расходы",
+    "Здоровье":     "Крупные расходы",
+    "Путешествия":  "Крупные расходы",
+    "Гаджеты":      "Крупные расходы",
+    "Подарки":      "Крупные расходы",
+    # Расходы
+    "Продукты":     "Расходы",
+    "Аренда":       "Расходы",
+    "Транспорт":    "Расходы",
+    "Развлечения":  "Расходы",
+    "Здоровье ":    "Расходы",   # с пробелом — отдельная статья в таблице Расходы
+    "Путешествия ": "Расходы",   # с пробелом — отдельная статья в таблице Расходы
+    "Прочее":       "Расходы",
+}
+
+# Нормализованные имена (без trailing-пробела) для отображения
+EXPENSE_ARTICLES_DISPLAY = {
+    "Дети":         "Крупные расходы",
+    "Джулиан":      "Крупные расходы",
+    "Лана":         "Крупные расходы",
+    "Образование":  "Крупные расходы",
+    "Здоровье":     "Крупные расходы",
+    "Путешествия":  "Крупные расходы",
+    "Гаджеты":      "Крупные расходы",
+    "Подарки":      "Крупные расходы",
+    "Продукты":     "Расходы",
+    "Аренда":       "Расходы",
+    "Транспорт":    "Расходы",
+    "Развлечения":  "Расходы",
+    "Здоровье":     "Расходы",
+    "Путешествия":  "Расходы",
+    "Прочее":       "Расходы",
 }
 
 INCOME_BY_TABLE = {
-    "Поступления": [a for a, t in INCOME_ARTICLES.items() if t == "Поступления"],
-    "Движение активов": [a for a, t in INCOME_ARTICLES.items() if t == "Движение активов"],
+    "Поступления": ["Зарплата", "Прочие поступления", "Премия и бонусы", "Инвестиционный доход"],
+    "Движение активов":  ["Портфель Екатерины", "Портфель Влада", "Портфель Ланы (подушка)", "Пенсионный план", "Инвестиции в бизнес"],
 }
 
 EXPENSE_BY_TABLE = {
-    "Крупные расходы": [a for a, t in EXPENSE_ARTICLES.items() if t == "Крупные расходы"],
-    "Расходы":         [a for a, t in EXPENSE_ARTICLES.items() if t == "Расходы"],
+    "Крупные расходы": ["Дети", "Джулиан", "Лана", "Образование", "Здоровье", "Путешествия", "Гаджеты", "Подарки"],
+    "Расходы":         ["Продукты", "Аренда", "Транспорт", "Развлечения", "Здоровье", "Путешествия", "Прочее"],
 }
 
-ALL_INCOME_ARTICLES  = list(INCOME_ARTICLES.keys())
-ALL_EXPENSE_ARTICLES = list(EXPENSE_ARTICLES.keys())
+ALL_INCOME_ARTICLES  = list(INCOME_BY_TABLE["Поступления"]) + list(INCOME_BY_TABLE["Движение активов"])
+ALL_EXPENSE_ARTICLES = list(EXPENSE_BY_TABLE["Крупные расходы"]) + list(EXPENSE_BY_TABLE["Расходы"])
 
 MONTH_SHEETS = {
     1: "ЯНВАРЬ", 2: "ФЕВРАЛЬ",  3: "МАРТ",     4: "АПРЕЛЬ",
@@ -376,17 +389,16 @@ MONTH_SHEETS = {
 }
 
 CURRENCIES       = ["RUB", "USD", "EUR", "KZT", "IDR", "VND"]
-CARDS            = ["Тинькофф", "Альфа", "Сбер", "Freedom", "Kaspi"]
 CURRENCY_SYMBOLS = {"RUB": "₽", "USD": "$", "EUR": "€", "KZT": "₸", "IDR": "Rp", "VND": "₫"}
 
 # ============================================================
 # Структура колонок таблицы (Planergo)
 # ============================================================
 TABLE_COLUMNS = {
-    "Поступления":      (2,  12),
-    "Крупные расходы":  (15, 25),
-    "Расходы":          (28, 38),
-    "Движение активов": (54, 64),
+    "Поступления":     (2,  12),
+    "Крупные расходы": (15, 25),
+    "Расходы":         (28, 38),
+    "Движение активов":      (54, 64),
 }
 
 DATA_ROW_START = 28
@@ -467,7 +479,7 @@ def write_to_month_sheet(date_str: str, article: str, amount_rub: float, table_n
         return False
 
 def write_transaction_row(date_str: str, article: str, amount_rub: float,
-                          currency: str, table_name: str, card: str, comment: str):
+                          currency: str, table_name: str, comment: str):
     sheet_name = get_month_sheet_name(date_str)
     try:
         ws = sh.worksheet(sheet_name)
@@ -529,17 +541,26 @@ def _get_history_text() -> str:
         return _history_cache["text"]
 
 def _resolve_article(article: str, tx_type: str) -> tuple:
-    all_articles = ALL_INCOME_ARTICLES if tx_type == "Доход" else ALL_EXPENSE_ARTICLES
-    articles_map = INCOME_ARTICLES if tx_type == "Доход" else EXPENSE_ARTICLES
-    if article not in all_articles:
-        article = all_articles[0] if all_articles else ""
-    if article:
-        return article, articles_map[article]
+    """
+    Возвращает (article, table_name).
+    Для расходов: сначала Крупные расходы, потом Расходы.
+    """
     if tx_type == "Доход":
+        for table, arts in INCOME_BY_TABLE.items():
+            if article in arts:
+                return article, table
         return "Прочие поступления", "Поступления"
-    return "Прочие расходы", "Расходы"
+    else:
+        for table, arts in EXPENSE_BY_TABLE.items():
+            if article in arts:
+                return article, table
+        return "Прочее", "Расходы"
 
 def guess_article(merchant: str, amount: float, tx_type: str = "Расход", hint: str = "") -> tuple:
+    # Ветеринар/зоо → всегда Джулиан
+    if tx_type == "Расход" and is_julian_merchant(merchant):
+        return "Джулиан", "Крупные расходы"
+
     history_text = _get_history_text()
     articles_str = json.dumps(
         ALL_INCOME_ARTICLES if tx_type == "Доход" else ALL_EXPENSE_ARTICLES,
@@ -554,7 +575,8 @@ def guess_article(merchant: str, amount: float, tx_type: str = "Расход", h
         f"{history_line}\n"
         f"Статьи: {articles_str}\n"
         f'Ответь ТОЛЬКО JSON: {{"article": "статья"}}\n'
-        f"Выбирай только из списка. Если место уже в истории — используй ту же статью."
+        f"Выбирай только из списка. Если место уже в истории — используй ту же статью.\n"
+        f"Важно: всё что связано с ветеринаром, зоомагазином, питомцами — статья 'Джулиан'."
     )
     try:
         result = ask_gemini(prompt)
@@ -566,14 +588,28 @@ def guess_article(merchant: str, amount: float, tx_type: str = "Расход", h
         logging.error(f"Ошибка угадывания статьи: {e}")
         if tx_type == "Доход":
             return "Прочие поступления", "Поступления"
-        return "Прочие расходы", "Расходы"
+        return "Прочее", "Расходы"
 
 def guess_articles_batch(transactions: list) -> list:
     if not transactions:
         return []
+
+    # Предобработка: зоо/вет → сразу Джулиан без AI
+    pre_results = {}
+    ai_indices  = []
+    for i, tx in enumerate(transactions):
+        if tx.get("tx_type", "Расход") == "Расход" and is_julian_merchant(tx.get("merchant", "")):
+            pre_results[i] = ("Джулиан", "Крупные расходы")
+        else:
+            ai_indices.append(i)
+
+    if not ai_indices:
+        return [pre_results[i] for i in range(len(transactions))]
+
     history_text = _get_history_text()
     items = []
-    for i, tx in enumerate(transactions):
+    for i in ai_indices:
+        tx       = transactions[i]
         hint     = tx.get("category_hint", "")
         hint_str = f", подсказка банка: {hint}" if hint else ""
         items.append(
@@ -593,36 +629,42 @@ def guess_articles_batch(transactions: list) -> list:
         f"Статьи доходов: {income_str}\n"
         f"{history_line}\n"
         f"Ответь ТОЛЬКО JSON массивом, индексы совпадают с транзакциями:\n"
-        f'[{{"index": 0, "article": "статья"}}, {{"index": 1, "article": "статья"}}, ...]\n'
+        f'[{{"index": 0, "article": "статья"}}, ...]\n'
         f"Правила:\n"
         f"- Выбирай ТОЛЬКО из предложенных статей\n"
         f'- Для type="Расход" — из статей расходов, для type="Доход" — из статей доходов\n'
-        f"- Если место есть в истории — используй ту же статью"
+        f"- Если место есть в истории — используй ту же статью\n"
+        f"- Ветеринар, зоомагазин, питомцы → статья 'Джулиан'"
     )
     try:
         result   = ask_gemini(prompt)
         raw_list = extract_json(result)
         if not isinstance(raw_list, list):
             raise ValueError("не список")
-        results = [None] * len(transactions)
+        ai_results = {}
         for item in raw_list:
             idx     = item.get("index", -1)
             article = item.get("article", "")
-            if 0 <= idx < len(transactions):
+            if idx in ai_indices:
                 tx_type      = transactions[idx].get("tx_type", "Расход")
-                results[idx] = _resolve_article(article, tx_type)
-        for i, tx in enumerate(transactions):
-            if results[i] is None:
-                tx_type    = tx.get("tx_type", "Расход")
-                results[i] = ("Прочие поступления", "Поступления") if tx_type == "Доход" else ("Прочие расходы", "Расходы")
-        return results
+                ai_results[idx] = _resolve_article(article, tx_type)
+        # Дефолт для не найденных
+        for i in ai_indices:
+            if i not in ai_results:
+                tx_type = transactions[i].get("tx_type", "Расход")
+                ai_results[i] = ("Прочие поступления", "Поступления") if tx_type == "Доход" else ("Прочее", "Расходы")
+        # Собираем финальный список
+        return [pre_results.get(i) or ai_results.get(i, ("Прочее", "Расходы")) for i in range(len(transactions))]
     except Exception as e:
         logging.error(f"Ошибка батч-угадывания: {e}")
-        return [
-            guess_article(tx.get("merchant",""), tx.get("amount",0),
-                         tx.get("tx_type","Расход"), tx.get("category_hint",""))
-            for tx in transactions
-        ]
+        results = []
+        for i, tx in enumerate(transactions):
+            if i in pre_results:
+                results.append(pre_results[i])
+            else:
+                results.append(guess_article(tx.get("merchant",""), tx.get("amount",0),
+                                             tx.get("tx_type","Расход"), tx.get("category_hint","")))
+        return results
 
 # ============================================================
 # Парсинг файлов (PDF, XLSX, SMS, Скриншот)
@@ -644,12 +686,11 @@ def parse_pdf_transactions(pdf_base64: str) -> list:
 - amount: число (положительное)
 - currency: RUB/USD/EUR/KZT
 - merchant: название магазина/места
-- card: карта если указана, иначе ""
 - category_hint: категория трат если видна на странице, иначе ""
 - tx_type: "Расход" или "Доход"
 Игнорируй: пополнения счёта, переводы между своими счетами.
 Ответ ТОЛЬКО JSON массивом:
-[{{"date": "01.01.2024", "amount": 1500, "currency": "RUB", "merchant": "Пятёрочка", "card": "Тинькофф", "tx_type": "Расход", "category_hint": "еда"}}]
+[{{"date": "01.01.2024", "amount": 1500, "currency": "RUB", "merchant": "Пятёрочка", "tx_type": "Расход", "category_hint": "еда"}}]
 Если транзакций нет — []."""
             result  = ask_gemini(prompt, image_bytes=img_bytes, mime_type="image/png")
             page_tx = extract_json(result)
@@ -671,7 +712,6 @@ def parse_xlsx_transactions(file_bytes: bytes) -> list:
         wb = openpyxl.load_workbook(BytesIO(file_bytes), data_only=True)
         ws = wb.active
 
-        # Найти строку заголовков
         header_row = None
         for i, row in enumerate(ws.iter_rows(values_only=True)):
             row_str = [str(c).strip() if c else '' for c in row]
@@ -703,11 +743,6 @@ def parse_xlsx_transactions(file_bytes: bytes) -> list:
             except ValueError:
                 continue
 
-            # Извлекаем карту из описания
-            card_match = re.search(r'\*+(\d{4})', desc)
-            card = card_match.group(1) if card_match else ''
-
-            # Извлекаем merchant из описания
             place_match = re.search(
                 r'место совершения операции:[^,]+/([^,\n]+?)(?:,|\s+MCC|$)',
                 desc, re.IGNORECASE
@@ -715,7 +750,6 @@ def parse_xlsx_transactions(file_bytes: bytes) -> list:
             if place_match:
                 merchant = place_match.group(1).strip()
             else:
-                # Для переводов и других операций берём первые слова
                 merchant = desc[:50].strip()
 
             tx_type = 'Доход' if amount_float > 0 else 'Расход'
@@ -725,7 +759,6 @@ def parse_xlsx_transactions(file_bytes: bytes) -> list:
                 'amount':        abs(amount_float),
                 'currency':      'RUB',
                 'merchant':      merchant,
-                'card':          card,
                 'tx_type':       tx_type,
                 'category_hint': category,
             })
@@ -744,11 +777,10 @@ def parse_screenshot_transactions(image_bytes: bytes, mime_type: str = "image/jp
 - amount: число (положительное)
 - currency: RUB/USD/EUR/KZT/IDR/VND (определи по символу ₽/$/€/₸/Rp/₫)
 - merchant: название места или описание
-- card: карта или последние 4 цифры, иначе ""
 - tx_type: "Расход" (списание) или "Доход" (зачисление)
 - category_hint: если на скриншоте РЯДОМ с транзакцией написана категория — напиши её, иначе ""
 Ответ ТОЛЬКО JSON массивом:
-[{"date": "01.01.2024", "amount": 1500, "currency": "RUB", "merchant": "Пятёрочка", "card": "Тинькофф", "tx_type": "Расход", "category_hint": "Еда"}]
+[{"date": "01.01.2024", "amount": 1500, "currency": "RUB", "merchant": "Пятёрочка", "tx_type": "Расход", "category_hint": "Еда"}]
 Если нет транзакций — [].
 Игнорируй: баланс, заголовки, рекламу."""
     try:
@@ -767,13 +799,12 @@ def parse_sms_transaction(sms_text: str) -> dict | None:
     prompt = f"""Извлеки данные транзакции из банковского SMS.
 SMS: {sms_text}
 Ответь ТОЛЬКО в формате JSON без markdown:
-{{"amount": 0.0, "currency": "RUB", "merchant": "название места или описание", "card": "название карты или последние 4 цифры", "tx_type": "Расход или Доход", "date": "ДД.ММ.ГГГГ или пустая строка"}}
+{{"amount": 0.0, "currency": "RUB", "merchant": "название места или описание", "tx_type": "Расход или Доход", "date": "ДД.ММ.ГГГГ или пустая строка"}}
 Правила:
 - tx_type = "Доход" если это пополнение/зачисление/перевод ПОЛУЧЕН
 - tx_type = "Расход" если это списание/покупка/оплата
 - amount всегда положительное число
 - если дата не указана — пустая строка
-- если карта не определена — пустая строка
 Если это НЕ банковское SMS с транзакцией — верни {{"error": "not_transaction"}}"""
     try:
         result = ask_gemini(prompt, no_cache=True)
@@ -818,8 +849,6 @@ class TransactionForm(StatesGroup):
     amount             = State()
     currency           = State()
     date               = State()
-    card               = State()
-    comment            = State()
     final_confirmation = State()
     edit_amount        = State()
     edit_currency      = State()
@@ -855,10 +884,10 @@ def table_choice_kb(tx_type: str):
     return kb
 
 TABLE_LABEL_MAP = {
-    "📥 Поступления":      "Поступления",
-    "🏦 Движение активов": "Движение активов",
-    "💳 Крупные расходы":  "Крупные расходы",
-    "🛒 Расходы":          "Расходы",
+    "📥 Поступления":  "Поступления",
+    "🏦 Движение активов":   "Движение активов",
+    "💳 Крупные расходы": "Крупные расходы",
+    "🛒 Расходы":      "Расходы",
 }
 
 def articles_kb(articles: list):
@@ -871,14 +900,6 @@ def articles_kb(articles: list):
 def currencies_kb():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     kb.add(*CURRENCIES)
-    kb.add("⏪ Назад")
-    return kb
-
-def cards_kb():
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    for card in CARDS:
-        kb.add(card)
-    kb.add("Пропустить")
     kb.add("⏪ Назад")
     return kb
 
@@ -955,17 +976,13 @@ def build_preview(data: dict) -> str:
             f"💱 Курс ЦБ: <code>{float(rate):,.4f}</code> ₽/{symbol}\n"
             f"🔄 В рублях: <code>{float(amount_rub):,.0f}</code> ₽\n"
         )
-    if data.get("card"):
-        preview += f"💳 Карта: <code>{data['card']}</code>\n"
-    if data.get("comment"):
-        preview += f"🏪 Место: <code>{data['comment']}</code>\n"
     return preview
 
 def build_pdf_tx_preview(tx: dict, idx: int, total: int) -> str:
     currency   = tx.get("currency", "RUB")
     amount     = tx.get("amount", 0)
     symbol     = CURRENCY_SYMBOLS.get(currency, currency)
-    article    = tx.get("article", "Прочие расходы")
+    article    = tx.get("article", "Прочее")
     table_name = tx.get("table_name", "Расходы")
     tx_type    = tx.get("tx_type", "Расход")
     tx_icon    = "💰" if tx_type == "Доход" else "💸"
@@ -976,7 +993,6 @@ def build_pdf_tx_preview(tx: dict, idx: int, total: int) -> str:
         f"{tx_icon} <b>{tx.get('merchant', '')}</b>\n"
         f"💰 {float(amount):,.2f} {symbol}\n"
         f"📅 {tx.get('date', '')}\n"
-        f"💳 {tx.get('card', '—') or '—'}\n"
         f"📂 {table_name} → {article}"
     )
     if hint:
@@ -1002,8 +1018,8 @@ async def save_transaction_to_sheets(data: dict):
     try:
         headers = ws.row_values(1)
         if headers and len(headers) > 1 and headers[1] == "Категория":
-            ws.update("A1:J1", [["Дата", "Таблица", "Статья", "Сумма", "Валюта",
-                                  "Курс", "Сумма в Руб", "Карта", "Место", "Тип"]])
+            ws.update("A1:H1", [["Дата", "Таблица", "Статья", "Сумма", "Валюта",
+                                  "Курс", "Сумма в Руб", "Тип"]])
             logging.info("Заголовки листа Транзакции обновлены")
     except Exception as e:
         logging.warning(f"Не удалось проверить/обновить заголовки: {e}")
@@ -1016,15 +1032,13 @@ async def save_transaction_to_sheets(data: dict):
         currency,
         rate if currency != "RUB" else "",
         amount_rub,
-        data.get("card", ""),
-        data.get("comment", ""),
         tx_type,
     ]
     ws.append_row(new_row)
 
     write_to_month_sheet(date_str, article, float(amount_rub), table_name)
     write_transaction_row(date_str, article, float(amount_rub), currency,
-                         table_name, data.get("card", ""), data.get("comment", ""))
+                         table_name, data.get("comment", ""))
 
 # ============================================================
 # Уведомление админу
@@ -1087,7 +1101,7 @@ async def handle_xlsx(message: types.Message, state: FSMContext):
         file       = await bot.get_file(message.document.file_id)
         file_bytes = await bot.download_file(file.file_path)
         xlsx_bytes = file_bytes.read()
-        await message.answer("🤖 Gemini AI анализирует выписку...")
+        await message.answer("🤖 Анализирую выписку...")
         transactions = parse_xlsx_transactions(xlsx_bytes)
         if not transactions:
             await message.answer("❌ Не удалось найти транзакции в файле.", reply_markup=main_menu_kb())
@@ -1108,7 +1122,7 @@ async def handle_pdf(message: types.Message, state: FSMContext):
         file       = await bot.get_file(message.document.file_id)
         file_bytes = await bot.download_file(file.file_path)
         pdf_base64 = base64.b64encode(file_bytes.read()).decode('utf-8')
-        await message.answer("🤖 Gemini AI анализирует транзакции...")
+        await message.answer("🤖 AI анализирует транзакции...")
         transactions = parse_pdf_transactions(pdf_base64)
         if not transactions:
             await message.answer("❌ Не удалось найти транзакции в файле.")
@@ -1186,13 +1200,12 @@ async def pdf_action_handler(callback: types.CallbackQuery, state: FSMContext):
             try:
                 await save_transaction_to_sheets({
                     "date":       tx.get("date", ""),
-                    "article":    tx.get("article", "Прочие расходы"),
+                    "article":    tx.get("article", "Прочее"),
                     "table_name": tx.get("table_name", "Расходы"),
                     "amount":     tx.get("amount", 0),
                     "currency":   tx.get("currency", "RUB"),
                     "rate":       tx.get("rate", 1.0),
                     "amount_rub": tx.get("amount_rub", tx.get("amount", 0)),
-                    "card":       tx.get("card", ""),
                     "comment":    tx.get("merchant", ""),
                     "tx_type":    tx.get("tx_type", "Расход"),
                 })
@@ -1263,13 +1276,12 @@ async def pdf_item_handler(callback: types.CallbackQuery, state: FSMContext):
         try:
             await save_transaction_to_sheets({
                 "date":       tx.get("date", ""),
-                "article":    tx.get("article", "Прочие расходы"),
+                "article":    tx.get("article", "Прочее"),
                 "table_name": tx.get("table_name", "Расходы"),
                 "amount":     tx.get("amount", 0),
                 "currency":   tx.get("currency", "RUB"),
                 "rate":       tx.get("rate", 1.0),
                 "amount_rub": tx.get("amount_rub", tx.get("amount", 0)),
-                "card":       tx.get("card", ""),
                 "comment":    tx.get("merchant", ""),
                 "tx_type":    tx.get("tx_type", "Расход"),
             })
@@ -1295,7 +1307,6 @@ async def pdf_item_handler(callback: types.CallbackQuery, state: FSMContext):
             currency=tx.get("currency", "RUB"),
             rate=tx.get("rate", 1.0),
             amount_rub=tx.get("amount_rub", tx.get("amount", 0)),
-            card=tx.get("card", ""),
             date=tx.get("date", ""),
             comment=tx.get("merchant", ""),
             tx_type=tx_type,
@@ -1316,7 +1327,6 @@ async def pdf_item_handler(callback: types.CallbackQuery, state: FSMContext):
             from_pdf=True,
             currency=tx.get("currency", "RUB"),
             date=tx.get("date", ""),
-            card=tx.get("card", ""),
             comment=tx.get("merchant", ""),
             tx_type=tx.get("tx_type", "Расход"),
             article=tx.get("article", ""),
@@ -1457,16 +1467,14 @@ async def process_article_choice(message: types.Message, state: FSMContext):
     if message.text not in valid:
         await message.answer("Выберите статью из списка:", reply_markup=articles_kb(valid))
         return
-    article         = message.text
-    art_map         = INCOME_ARTICLES if tx_type == "Доход" else EXPENSE_ARTICLES
-    confirmed_table = art_map.get(article, table_name)
-    await state.update_data(article=article, table_name=confirmed_table)
+    article    = message.text
+    await state.update_data(article=article, table_name=table_name)
     if data.get("from_pdf"):
         user_id = message.from_user.id
         session = pdf_sessions.get(user_id)
         if session:
             session["transactions"][data["pdf_idx"]]["article"]    = article
-            session["transactions"][data["pdf_idx"]]["table_name"] = confirmed_table
+            session["transactions"][data["pdf_idx"]]["table_name"] = table_name
         updated_data = await state.get_data()
         await TransactionForm.final_confirmation.set()
         await message.answer(build_preview(updated_data), parse_mode="HTML", reply_markup=confirmation_kb())
@@ -1549,38 +1557,6 @@ async def process_date(message: types.Message, state: FSMContext):
         await message.answer("Введите дату в формате ДД.ММ.ГГГГ, ЧЧ:ММ (например: 09.03.2026, 14:35):", reply_markup=back_kb())
         return
     await state.update_data(date=date_str)
-    await TransactionForm.card.set()
-    await message.answer("Выберите карту/счёт или пропустите:", reply_markup=cards_kb())
-
-# ============================================================
-# Карта
-# ============================================================
-@dp.message_handler(state=TransactionForm.card)
-async def process_card(message: types.Message, state: FSMContext):
-    if message.text == "⏪ Назад":
-        await TransactionForm.date.set()
-        today = datetime.now().strftime("%d.%m.%Y, %H:%M")
-        kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-        kb.add(today)
-        kb.add("⏪ Назад")
-        await message.answer("Введите дату:", reply_markup=kb)
-        return
-    card = "" if message.text == "Пропустить" else message.text
-    await state.update_data(card=card)
-    await TransactionForm.comment.set()
-    await message.answer("Введите место/магазин (или пропустите):", reply_markup=skip_kb())
-
-# ============================================================
-# Место / комментарий
-# ============================================================
-@dp.message_handler(state=TransactionForm.comment)
-async def process_comment(message: types.Message, state: FSMContext):
-    if message.text == "⏪ Назад":
-        await TransactionForm.card.set()
-        await message.answer("Выберите карту/счёт:", reply_markup=cards_kb())
-        return
-    comment = "" if message.text == "Пропустить" else message.text
-    await state.update_data(comment=comment)
     data = await state.get_data()
     await TransactionForm.final_confirmation.set()
     await message.answer(build_preview(data), parse_mode="HTML", reply_markup=confirmation_kb())
@@ -1602,8 +1578,8 @@ async def final_confirmation(message: types.Message, state: FSMContext):
                 message.from_user
             )
             if data.get("from_pdf"):
-                user_id = message.from_user.id
-                session = pdf_sessions.get(user_id)
+                user_id  = message.from_user.id
+                session  = pdf_sessions.get(user_id)
                 next_idx = data.get("pdf_idx", 0) + 1
                 if session:
                     session["saved_count"] = session.get("saved_count", 0) + 1
@@ -1658,7 +1634,7 @@ async def process_webhook_quick(callback: types.CallbackQuery, state: FSMContext
         return
     await state.update_data(
         amount=tx["a"], currency=tx["cur"], rate=tx["rate"],
-        amount_rub=tx["a_rub"], card=tx["c"], date=tx["d"],
+        amount_rub=tx["a_rub"], date=tx["d"],
         comment=tx["m"], from_webhook=True, article=article,
         table_name=table_name,
         tx_type=tx.get("tx_type", "Расход"),
@@ -1693,7 +1669,6 @@ async def process_webhook_callback(callback: types.CallbackQuery, state: FSMCont
         currency=tx.get("cur", "RUB"),
         rate=tx.get("rate", 1.0),
         amount_rub=tx.get("a_rub", tx.get("a", 0)),
-        card=tx.get("c", ""),
         date=tx.get("d", datetime.now().strftime("%d.%m.%Y, %H:%M")),
         comment=tx.get("m", ""),
         tx_type=tx.get("tx_type", "Расход"),
@@ -1742,7 +1717,7 @@ async def my_transactions(message: types.Message):
             text += f"  💰 {amount:,.0f} {symbol}"
             if currency != "RUB":
                 text += f" ({amount_rub:,.0f} ₽)"
-            text += f"\n  🏪 {rec.get('Место','') or '—'}\n{'─' * 32}\n"
+            text += f"\n{'─' * 32}\n"
         await message.answer(text, parse_mode="HTML", reply_markup=main_menu_kb())
     except Exception as e:
         logging.error(f"Ошибка чтения транзакций: {e}")
@@ -1782,10 +1757,10 @@ async def statistics(message: types.Message):
             return
         total = sum(table_totals.values())
         icons = {
-            "Поступления":    "📥",
-            "Движение активов": "🏦",
+            "Поступления":     "📥",
+            "Движение активов":      "🏦",
             "Крупные расходы": "💳",
-            "Расходы":        "🛒",
+            "Расходы":         "🛒",
         }
         text = f"📊 <b>Статистика за {current_month}:</b>\n"
         for tbl, amt in sorted(table_totals.items(), key=lambda x: x[1], reverse=True):
@@ -1819,7 +1794,7 @@ async def settings(message: types.Message):
         f"📥 Поступления      → col B / L\n"
         f"💳 Крупные расходы  → col O / Y\n"
         f"🛒 Расходы          → col AB / AL\n"
-        f"🏦 Движение активов → col BB / BL",
+        f"🏦 Движение активов       → col BB / BL",
         parse_mode="HTML", reply_markup=main_menu_kb()
     )
 
@@ -1868,7 +1843,6 @@ async def process_draft(callback: types.CallbackQuery, state: FSMContext):
         currency=draft["cur"],
         rate=draft["rate"],
         amount_rub=draft["a_rub"],
-        card=draft["c"],
         date=draft["d"],
         comment=draft["m"],
         tx_type=tx_type,
@@ -1890,7 +1864,7 @@ async def process_draft(callback: types.CallbackQuery, state: FSMContext):
 async def handle_screenshot(message: types.Message, state: FSMContext):
     if ALLOWED_IDS and message.from_user.id not in ALLOWED_IDS:
         return
-    await message.answer("📸 Анализирую скриншот через Gemini AI...")
+    await message.answer("📸 Анализирую скриншот...")
     try:
         photo       = message.photo[-1]
         file        = await bot.get_file(photo.file_id)
@@ -1922,7 +1896,6 @@ async def _send_single_tx(message: types.Message, tx: dict):
     amount     = float(tx.get("amount", 0))
     currency   = tx.get("currency", "RUB")
     merchant   = tx.get("merchant", "")
-    card       = tx.get("card", "")
     tx_type_w  = tx.get("tx_type", "Расход")
     date_raw   = tx.get("date", "")
     date       = date_raw if date_raw else datetime.now().strftime("%d.%m.%Y, %H:%M")
@@ -1934,12 +1907,12 @@ async def _send_single_tx(message: types.Message, tx: dict):
     article, table_name = guess_article(merchant, amount, tx_type=tx_type_w, hint=hint)
     tx_id = str(uuid.uuid4())[:8]
     pending_transactions[tx_id] = {
-        "a": amount, "m": merchant, "c": card, "d": date,
+        "a": amount, "m": merchant, "d": date,
         "cur": currency, "rate": rate, "a_rub": amount_rub,
         "tx_type": tx_type_w, "article": article, "table_name": table_name,
     }
     drafts_add(message.from_user.id, {
-        "id": str(uuid.uuid4())[:8], "a": amount, "m": merchant, "c": card, "d": date,
+        "id": str(uuid.uuid4())[:8], "a": amount, "m": merchant, "d": date,
         "cur": currency, "rate": rate, "a_rub": amount_rub, "tx_type": tx_type_w,
     })
     kb = types.InlineKeyboardMarkup(row_width=1)
@@ -1962,7 +1935,6 @@ async def _send_single_tx(message: types.Message, tx: dict):
         f"{tx_icon} {tx_type_w}\n"
         f"💵 {amount:,.2f} {symbol}\n"
         f"🏪 {merchant}\n"
-        f"💳 {card}\n"
         f"📅 {date}{hint_line}\n"
         f"📂 <b>{table_name}</b> → <b>{article}</b>\n"
         f"Подтвердите или выберите другую:"
@@ -1982,7 +1954,7 @@ async def _send_single_tx(message: types.Message, tx: dict):
 async def handle_sms_text(message: types.Message, state: FSMContext):
     if ALLOWED_IDS and message.from_user.id not in ALLOWED_IDS:
         return
-    await message.answer("📱 Похоже на банковское SMS, разбираю через Gemini...")
+    await message.answer("📱 Похоже на банковское SMS, разбираю...")
     tx = parse_sms_transaction(message.text)
     if not tx:
         await message.answer("❌ Не смог распознать транзакцию. Попробуйте ➕ Новая транзакция.")
@@ -2027,7 +1999,6 @@ def webhook_transaction():
         amount    = float(data.get("amount", 0))
         currency  = data.get("currency", "RUB")
         merchant  = data.get("merchant", "Неизвестно")
-        card      = data.get("card", "")
         date      = data.get("date", datetime.now().strftime("%d.%m.%Y, %H:%M"))
         tx_type_w = data.get("tx_type", "Расход")
         rate      = get_cbr_rate(currency)
@@ -2038,19 +2009,19 @@ def webhook_transaction():
         tx_id   = str(uuid.uuid4())[:8]
         uid_int = int(user_id)
         pending_transactions[tx_id] = {
-            "a": amount, "m": merchant, "c": card, "d": date,
+            "a": amount, "m": merchant, "d": date,
             "cur": currency, "rate": rate, "a_rub": amount_rub,
             "tx_type": tx_type_w, "article": article, "table_name": table_name,
         }
         drafts_add(uid_int, {
-            "id": str(uuid.uuid4())[:8], "a": amount, "m": merchant, "c": card, "d": date,
+            "id": str(uuid.uuid4())[:8], "a": amount, "m": merchant, "d": date,
             "cur": currency, "rate": rate, "a_rub": amount_rub, "tx_type": tx_type_w,
         })
         text = (
             f"🔔 <b>Новая транзакция:</b>\n{icon} {tx_type_w}\n"
             f"💰 {amount:,.2f} {symbol}"
             + (f"\n🔄 {amount_rub:,.2f} ₽" if currency != "RUB" else "")
-            + f"\n🏪 {merchant}\n💳 {card}\n📅 {date}\n"
+            + f"\n🏪 {merchant}\n📅 {date}\n"
             f"🤖 {table_name} → {article}\nЗаписать?"
         )
         kb = _build_quick_kb(tx_id, article, table_name, tx_type_w)
@@ -2077,7 +2048,6 @@ def webhook_sms():
         amount    = float(tx.get("amount", 0))
         currency  = tx.get("currency", "RUB")
         merchant  = tx.get("merchant", "SMS")
-        card      = tx.get("card", "")
         tx_type_w = tx.get("tx_type", "Расход")
         date      = tx.get("date") or datetime.now().strftime("%d.%m.%Y, %H:%M")
         rate      = get_cbr_rate(currency)
@@ -2088,19 +2058,19 @@ def webhook_sms():
         tx_id   = str(uuid.uuid4())[:8]
         uid_int = int(user_id)
         pending_transactions[tx_id] = {
-            "a": amount, "m": merchant, "c": card, "d": date,
+            "a": amount, "m": merchant, "d": date,
             "cur": currency, "rate": rate, "a_rub": amount_rub,
             "tx_type": tx_type_w, "article": article, "table_name": table_name,
         }
         drafts_add(uid_int, {
-            "id": str(uuid.uuid4())[:8], "a": amount, "m": merchant, "c": card, "d": date,
+            "id": str(uuid.uuid4())[:8], "a": amount, "m": merchant, "d": date,
             "cur": currency, "rate": rate, "a_rub": amount_rub, "tx_type": tx_type_w,
         })
         text = (
             f"📱 <b>SMS транзакция:</b>\n{icon} {tx_type_w}\n"
             f"💵 {amount:,.2f} {symbol}"
             + (f"\n🔄 {amount_rub:,.2f} ₽" if currency != "RUB" else "")
-            + f"\n🏪 {merchant}\n💳 {card}\n📅 {date}\n"
+            + f"\n🏪 {merchant}\n📅 {date}\n"
             f"🤖 {table_name} → {article}\nЗаписать?"
         )
         kb = _build_quick_kb(tx_id, article, table_name, tx_type_w)
@@ -2135,5 +2105,5 @@ def run_flask():
 if __name__ == "__main__":
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
-    logging.info("🚀 DizelFinance Bot v2 запущен! (Gemini 2.5 Flash + Planergo Structure)")
+    logging.info("🚀 DizelFinance Bot v2 запущен! (Claude API + Planergo Structure)")
     run_bot()
