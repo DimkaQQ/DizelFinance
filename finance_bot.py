@@ -1040,6 +1040,68 @@ async def save_transaction_to_sheets(data: dict):
     write_transaction_row(date_str, article, float(amount_rub), currency,
                          table_name, data.get("comment", ""))
 
+async def save_transactions_batch(transactions: list) -> int:
+    from collections import defaultdict
+    if not transactions:
+        return 0
+
+    ws_tx = sh.worksheet("Транзакции")
+
+    try:
+        headers = ws_tx.row_values(1)
+        if not headers or len(headers) < 7 or (len(headers) > 1 and headers[1] == "Категория"):
+            ws_tx.update("A1:H1", [["Дата", "Таблица", "Статья", "Сумма",
+                                     "Валюта", "Курс", "Сумма в Руб", "Тип"]])
+    except Exception as e:
+        logging.warning(f"Заголовки: {e}")
+
+    new_rows = []
+    for data in transactions:
+        currency = data.get("currency", "RUB")
+        new_rows.append([
+            data.get("date", ""),
+            data.get("table_name", ""),
+            data.get("article", ""),
+            data.get("amount", 0),
+            currency,
+            data.get("rate", "") if currency != "RUB" else "",
+            data.get("amount_rub", data.get("amount", 0)),
+            data.get("tx_type", "Расход"),
+        ])
+
+    if new_rows:
+        ws_tx.append_rows(new_rows, value_input_option="USER_ENTERED")
+        logging.info(f"✅ Батч: {len(new_rows)} строк за 1 вызов")
+
+    month_sums = defaultdict(float)
+    for data in transactions:
+        key = (
+            get_month_sheet_name(data.get("date", "")),
+            data.get("table_name", ""),
+            data.get("article", ""),
+        )
+        month_sums[key] += float(data.get("amount_rub", data.get("amount", 0)))
+
+    # Маппинг имени листа → дата для write_to_month_sheet
+    MONTH_TO_DATE = {v: f"01.{k:02d}.{datetime.now().year}"
+                     for k, v in MONTH_SHEETS.items()}
+
+    ws_cache = {}
+    for (sheet_name, table_name, article), total_rub in month_sums.items():
+        if not table_name or not article:
+            continue
+        try:
+            if sheet_name not in ws_cache:
+                ws_cache[sheet_name] = sh.worksheet(sheet_name)
+            fake_date = MONTH_TO_DATE.get(sheet_name, datetime.now().strftime("%d.%m.%Y"))
+            write_to_month_sheet(fake_date, article, total_rub, table_name)
+        except gspread.exceptions.WorksheetNotFound:
+            logging.warning(f"Лист {sheet_name} не найден")
+        except Exception as e:
+            logging.error(f"Ошибка {sheet_name}/{article}: {e}")
+
+    return len(new_rows)
+
 # ============================================================
 # Уведомление админу
 # ============================================================
@@ -1195,10 +1257,9 @@ async def pdf_action_handler(callback: types.CallbackQuery, state: FSMContext):
         await callback.message.answer("Выберите действие:", reply_markup=main_menu_kb())
     elif action == "all":
         await callback.message.edit_text("⏳ Записываю все транзакции...")
-        saved = 0
-        for tx in session["transactions"]:
-            try:
-                await save_transaction_to_sheets({
+        try:
+            batch = [
+                {
                     "date":       tx.get("date", ""),
                     "article":    tx.get("article", "Прочее"),
                     "table_name": tx.get("table_name", "Расходы"),
@@ -1206,14 +1267,18 @@ async def pdf_action_handler(callback: types.CallbackQuery, state: FSMContext):
                     "currency":   tx.get("currency", "RUB"),
                     "rate":       tx.get("rate", 1.0),
                     "amount_rub": tx.get("amount_rub", tx.get("amount", 0)),
-                    "comment":    tx.get("merchant", ""),
                     "tx_type":    tx.get("tx_type", "Расход"),
-                })
-                saved += 1
-            except Exception as e:
-                logging.error(f"Ошибка записи: {e}")
-        pdf_sessions.pop(user_id, None)
-        await callback.message.answer(f"✅ Записано {saved} транзакций!", reply_markup=main_menu_kb())
+                }
+                for tx in session["transactions"]
+            ]
+            saved = await save_transactions_batch(batch)
+            pdf_sessions.pop(user_id, None)
+            await callback.message.answer(
+                f"✅ Записано {saved} транзакций!", reply_markup=main_menu_kb()
+            )
+        except Exception as e:
+            logging.error(f"Ошибка батч-записи: {e}")
+            await callback.message.answer(f"❌ Ошибка: {e}", reply_markup=main_menu_kb())
     elif action == "review":
         session["current_idx"] = 0
         await PDFForm.reviewing.set()
