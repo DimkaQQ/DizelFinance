@@ -822,10 +822,10 @@ def get_existing_transactions() -> set:
         records = ws.get_all_records()
         existing = set()
         for rec in records:
-            date     = str(rec.get("Дата", "")).split(",")[0].strip()
-            amount   = str(rec.get("Сумма", ""))
-            merchant = str(rec.get("Место", "")).strip().lower()
-            existing.add(f"{date}|{amount}|{merchant}")
+            date   = str(rec.get("Дата", "")).split(",")[0].strip()
+            amount = str(rec.get("Сумма", "")).strip()
+            # Место нет в таблице — матчим только по дата+сумма
+            existing.add(f"{date}|{amount}")
         return existing
     except Exception as e:
         logging.error(f"Ошибка получения транзакций: {e}")
@@ -1202,10 +1202,10 @@ async def handle_pdf(message: types.Message, state: FSMContext):
 def _enrich_transactions(transactions: list, article_results: list, existing: set) -> list:
     enriched = []
     for tx, (article, table_name) in zip(transactions, article_results):
-        date_part    = str(tx.get("date", "")).split(",")[0].strip()
-        amount_str   = str(tx.get("amount", ""))
-        merchant_key = str(tx.get("merchant", "")).strip().lower()
-        is_duplicate = f"{date_part}|{amount_str}|{merchant_key}" in existing
+        date_part  = str(tx.get("date", "")).split(",")[0].strip()
+        amount_str = str(tx.get("amount", ""))
+        # Было: f"{date_part}|{amount_str}|{merchant_key}"
+        is_duplicate = f"{date_part}|{amount_str}" in existing
         currency     = tx.get("currency", "RUB")
         rate         = get_cbr_rate(currency)
         amount_rub   = round(float(tx.get("amount", 0)) * rate, 2)
