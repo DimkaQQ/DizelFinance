@@ -178,7 +178,7 @@ def _fetch_rate(currency: str) -> float:
     return fallback
 
 # ============================================================
-# Надёжный парсинг JSON из ответа Gemini
+# Надёжный парсинг JSON из ответа Claude
 # ============================================================
 def extract_json(text: str):
     text = text.strip()
@@ -233,7 +233,7 @@ def extract_json(text: str):
     return json.loads(text)
 
 # ============================================================
-# Claude API — замена Gemini
+# Claude API — с TTL кешем 10 минут (FIX: было постоянно)
 # ============================================================
 def ask_gemini(prompt: str, image_bytes: bytes = None,
                mime_type: str = "image/jpeg", no_cache: bool = False) -> str:
@@ -242,15 +242,20 @@ def ask_gemini(prompt: str, image_bytes: bytes = None,
     ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
     CLAUDE_MODEL      = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 
+    CACHE_TTL  = 600  # 10 минут — не постоянно
     cache_key  = hashlib.md5(prompt.encode()).hexdigest() if (not image_bytes and not no_cache) else None
     cache_file = f"/tmp/claude_cache_{cache_key}.json" if cache_key else None
 
     if cache_file and os.path.exists(cache_file):
         try:
-            with open(cache_file, encoding="utf-8") as f:
-                cached_val = json.load(f)
-                logging.info("Claude cache HIT")
-                return cached_val
+            file_age = _time_module.time() - os.path.getmtime(cache_file)
+            if file_age < CACHE_TTL:
+                with open(cache_file, encoding="utf-8") as f:
+                    cached_val = json.load(f)
+                    logging.info(f"Claude cache HIT (age: {int(file_age)}s)")
+                    return cached_val
+            else:
+                os.remove(cache_file)
         except Exception:
             pass
 
@@ -312,46 +317,37 @@ JULIAN_KEYWORDS = [
     "animal", "petstore", "зооуголок", "зоосалон", "груминг",
 ]
 
+# FIX: ключевые слова для внутрибанковских переводов → Движение активов / Прочее
+INTERNAL_TRANSFER_KEYWORDS = [
+    "сперанский", "speransky",
+    "внутрибанковский перевод",
+    "перевод между счетами",
+    "погашение од",
+    "пополнение счета",
+]
+
 def is_julian_merchant(merchant: str) -> bool:
-    """Проверяет, относится ли merchant к ветеринарным/зоо тратам."""
     m = merchant.lower()
     return any(kw in m for kw in JULIAN_KEYWORDS)
+
+def is_internal_transfer(merchant: str, desc: str = "") -> bool:
+    text = (merchant + " " + desc).lower()
+    return any(kw in text for kw in INTERNAL_TRANSFER_KEYWORDS)
 
 INCOME_ARTICLES = {
     "Зарплата":             "Поступления",
     "Прочие поступления":   "Поступления",
     "Премия и бонусы":      "Поступления",
     "Инвестиционный доход": "Поступления",
-    # Движение активов
     "Портфель Екатерины":       "Движение активов",
     "Портфель Влада":           "Движение активов",
     "Портфель Ланы (подушка)":  "Движение активов",
     "Пенсионный план":          "Движение активов",
     "Инвестиции в бизнес":      "Движение активов",
+    "Прочее":                   "Движение активов",
 }
 
 EXPENSE_ARTICLES = {
-    # Крупные расходы
-    "Дети":         "Крупные расходы",
-    "Джулиан":      "Крупные расходы",
-    "Лана":         "Крупные расходы",
-    "Образование":  "Крупные расходы",
-    "Здоровье":     "Крупные расходы",
-    "Путешествия":  "Крупные расходы",
-    "Гаджеты":      "Крупные расходы",
-    "Подарки":      "Крупные расходы",
-    # Расходы
-    "Продукты":     "Расходы",
-    "Аренда":       "Расходы",
-    "Транспорт":    "Расходы",
-    "Развлечения":  "Расходы",
-    "Здоровье ":    "Расходы",   # с пробелом — отдельная статья в таблице Расходы
-    "Путешествия ": "Расходы",   # с пробелом — отдельная статья в таблице Расходы
-    "Прочее":       "Расходы",
-}
-
-# Нормализованные имена (без trailing-пробела) для отображения
-EXPENSE_ARTICLES_DISPLAY = {
     "Дети":         "Крупные расходы",
     "Джулиан":      "Крупные расходы",
     "Лана":         "Крупные расходы",
@@ -364,19 +360,23 @@ EXPENSE_ARTICLES_DISPLAY = {
     "Аренда":       "Расходы",
     "Транспорт":    "Расходы",
     "Развлечения":  "Расходы",
-    "Здоровье":     "Расходы",
-    "Путешествия":  "Расходы",
+    "Здоровье ":    "Расходы",
+    "Путешествия ": "Расходы",
     "Прочее":       "Расходы",
 }
 
 INCOME_BY_TABLE = {
     "Поступления": ["Зарплата", "Прочие поступления", "Премия и бонусы", "Инвестиционный доход"],
-    "Движение активов":  ["Портфель Екатерины", "Портфель Влада", "Портфель Ланы (подушка)", "Пенсионный план", "Инвестиции в бизнес"],
+    # FIX: добавлено "Прочее" в конец
+    "Движение активов": ["Портфель Екатерины", "Портфель Влада", "Портфель Ланы (подушка)",
+                         "Пенсионный план", "Инвестиции в бизнес", "Прочее"],
 }
 
 EXPENSE_BY_TABLE = {
-    "Крупные расходы": ["Дети", "Джулиан", "Лана", "Образование", "Здоровье", "Путешествия", "Гаджеты", "Подарки"],
-    "Расходы":         ["Продукты", "Аренда", "Транспорт", "Развлечения", "Здоровье", "Путешествия", "Прочее"],
+    "Крупные расходы": ["Дети", "Джулиан", "Лана", "Образование", "Здоровье",
+                        "Путешествия", "Гаджеты", "Подарки"],
+    "Расходы":         ["Продукты", "Аренда", "Транспорт", "Развлечения",
+                        "Здоровье", "Путешествия", "Прочее"],
 }
 
 ALL_INCOME_ARTICLES  = list(INCOME_BY_TABLE["Поступления"]) + list(INCOME_BY_TABLE["Движение активов"])
@@ -395,10 +395,10 @@ CURRENCY_SYMBOLS = {"RUB": "₽", "USD": "$", "EUR": "€", "KZT": "₸", "IDR":
 # Структура колонок таблицы (Planergo)
 # ============================================================
 TABLE_COLUMNS = {
-    "Поступления":     (2,  12),
-    "Крупные расходы": (15, 25),
-    "Расходы":         (28, 38),
-    "Движение активов":      (54, 64),
+    "Поступления":      (2,  12),
+    "Крупные расходы":  (15, 25),
+    "Расходы":          (28, 38),
+    "Движение активов": (54, 64),
 }
 
 DATA_ROW_START = 28
@@ -450,7 +450,7 @@ def write_to_month_sheet(date_str: str, article: str, amount_rub: float, table_n
             break
 
     if target_row is None:
-        logging.warning(f"Статья '{article}' не найдена в таблице '{table_name}' листа {sheet_name}")
+        logging.warning(f"Статья '{article}' не найдена в '{table_name}' листа {sheet_name}")
         for row_idx in range(DATA_ROW_START, DATA_ROW_END + 1):
             cell_val = name_col_values[row_idx - 1] if row_idx <= len(name_col_values) else ""
             if not cell_val.strip():
@@ -459,7 +459,7 @@ def write_to_month_sheet(date_str: str, article: str, amount_rub: float, table_n
                 break
 
     if target_row is None:
-        logging.error(f"Нет свободных строк в таблице '{table_name}' листа {sheet_name}")
+        logging.error(f"Нет свободных строк в '{table_name}' листа {sheet_name}")
         return False
 
     try:
@@ -472,10 +472,10 @@ def write_to_month_sheet(date_str: str, article: str, amount_rub: float, table_n
     new_amount = current_amount + amount_rub
     try:
         ws.update_cell(target_row, col_fact, round(new_amount, 2))
-        logging.info(f"✅ Записано в {sheet_name}/{table_name}/{article}: {current_amount} + {amount_rub} = {new_amount}")
+        logging.info(f"✅ {sheet_name}/{table_name}/{article}: {current_amount} + {amount_rub} = {new_amount}")
         return True
     except Exception as e:
-        logging.error(f"Ошибка записи в ячейку {sheet_name} R{target_row}C{col_fact}: {e}")
+        logging.error(f"Ошибка записи {sheet_name} R{target_row}C{col_fact}: {e}")
         return False
 
 def write_transaction_row(date_str: str, article: str, amount_rub: float,
@@ -510,12 +510,12 @@ def write_transaction_row(date_str: str, article: str, amount_rub: float,
         ws.update_cell(next_row, date_col, date_short)
         ws.update_cell(next_row, art_col, article)
         ws.update_cell(next_row, amount_col, round(amount_rub, 2))
-        logging.info(f"📝 Строка транзакции → {sheet_name} R{next_row} {article} {amount_rub}")
+        logging.info(f"📝 Строка → {sheet_name} R{next_row} {article} {amount_rub}")
     except Exception as e:
         logging.error(f"Ошибка записи строки транзакции: {e}")
 
 # ============================================================
-# История и Угадывание статей
+# История и угадывание статей
 # ============================================================
 _history_cache: dict = {"text": "", "ts": 0}
 _HISTORY_TTL = 300
@@ -541,10 +541,6 @@ def _get_history_text() -> str:
         return _history_cache["text"]
 
 def _resolve_article(article: str, tx_type: str) -> tuple:
-    """
-    Возвращает (article, table_name).
-    Для расходов: сначала Крупные расходы, потом Расходы.
-    """
     if tx_type == "Доход":
         for table, arts in INCOME_BY_TABLE.items():
             if article in arts:
@@ -557,9 +553,12 @@ def _resolve_article(article: str, tx_type: str) -> tuple:
         return "Прочее", "Расходы"
 
 def guess_article(merchant: str, amount: float, tx_type: str = "Расход", hint: str = "") -> tuple:
-    # Ветеринар/зоо → всегда Джулиан
     if tx_type == "Расход" and is_julian_merchant(merchant):
         return "Джулиан", "Крупные расходы"
+
+    # FIX: внутрибанк → Движение активов / Прочее
+    if is_internal_transfer(merchant, hint):
+        return "Прочее", "Движение активов"
 
     history_text = _get_history_text()
     articles_str = json.dumps(
@@ -594,12 +593,18 @@ def guess_articles_batch(transactions: list) -> list:
     if not transactions:
         return []
 
-    # Предобработка: зоо/вет → сразу Джулиан без AI
     pre_results = {}
     ai_indices  = []
     for i, tx in enumerate(transactions):
-        if tx.get("tx_type", "Расход") == "Расход" and is_julian_merchant(tx.get("merchant", "")):
+        merchant = tx.get("merchant", "")
+        desc     = tx.get("category_hint", "")
+        tx_type  = tx.get("tx_type", "Расход")
+
+        if tx_type == "Расход" and is_julian_merchant(merchant):
             pre_results[i] = ("Джулиан", "Крупные расходы")
+        elif is_internal_transfer(merchant, desc):
+            # FIX: переводы Сперанского/внутрибанк → Движение активов / Прочее
+            pre_results[i] = ("Прочее", "Движение активов")
         else:
             ai_indices.append(i)
 
@@ -646,14 +651,12 @@ def guess_articles_batch(transactions: list) -> list:
             idx     = item.get("index", -1)
             article = item.get("article", "")
             if idx in ai_indices:
-                tx_type      = transactions[idx].get("tx_type", "Расход")
+                tx_type         = transactions[idx].get("tx_type", "Расход")
                 ai_results[idx] = _resolve_article(article, tx_type)
-        # Дефолт для не найденных
         for i in ai_indices:
             if i not in ai_results:
                 tx_type = transactions[i].get("tx_type", "Расход")
                 ai_results[i] = ("Прочие поступления", "Поступления") if tx_type == "Доход" else ("Прочее", "Расходы")
-        # Собираем финальный список
         return [pre_results.get(i) or ai_results.get(i, ("Прочее", "Расходы")) for i in range(len(transactions))]
     except Exception as e:
         logging.error(f"Ошибка батч-угадывания: {e}")
@@ -816,6 +819,7 @@ SMS: {sms_text}
         logging.error(f"Ошибка парсинга SMS: {e}")
         return None
 
+# FIX: проверка дубликатов по дата+сумма (колонки Место нет в таблице)
 def get_existing_transactions() -> set:
     try:
         ws      = sh.worksheet("Транзакции")
@@ -824,7 +828,6 @@ def get_existing_transactions() -> set:
         for rec in records:
             date   = str(rec.get("Дата", "")).split(",")[0].strip()
             amount = str(rec.get("Сумма", "")).strip()
-            # Место нет в таблице — матчим только по дата+сумма
             existing.add(f"{date}|{amount}")
         return existing
     except Exception as e:
@@ -884,10 +887,10 @@ def table_choice_kb(tx_type: str):
     return kb
 
 TABLE_LABEL_MAP = {
-    "📥 Поступления":  "Поступления",
-    "🏦 Движение активов":   "Движение активов",
+    "📥 Поступления":     "Поступления",
+    "🏦 Движение активов": "Движение активов",
     "💳 Крупные расходы": "Крупные расходы",
-    "🛒 Расходы":      "Расходы",
+    "🛒 Расходы":         "Расходы",
 }
 
 def articles_kb(articles: list):
@@ -1002,7 +1005,7 @@ def build_pdf_tx_preview(tx: dict, idx: int, total: int) -> str:
     return text
 
 # ============================================================
-# Запись транзакции: в лист «Транзакции» + в лист месяца
+# Запись одной транзакции
 # ============================================================
 async def save_transaction_to_sheets(data: dict):
     article    = data.get("article", "")
@@ -1025,21 +1028,18 @@ async def save_transaction_to_sheets(data: dict):
         logging.warning(f"Не удалось проверить/обновить заголовки: {e}")
 
     new_row = [
-        date_str,
-        table_name,
-        article,
-        amount,
-        currency,
-        rate if currency != "RUB" else "",
-        amount_rub,
-        tx_type,
+        date_str, table_name, article, amount, currency,
+        rate if currency != "RUB" else "", amount_rub, tx_type,
     ]
     ws.append_row(new_row)
 
     write_to_month_sheet(date_str, article, float(amount_rub), table_name)
     write_transaction_row(date_str, article, float(amount_rub), currency,
-                         table_name, data.get("comment", ""))
+                          table_name, data.get("comment", ""))
 
+# ============================================================
+# FIX: Батчевая запись — все три места (Транзакции + сводные + детальные)
+# ============================================================
 async def save_transactions_batch(transactions: list) -> int:
     from collections import defaultdict
     if not transactions:
@@ -1055,6 +1055,7 @@ async def save_transactions_batch(transactions: list) -> int:
     except Exception as e:
         logging.warning(f"Заголовки: {e}")
 
+    # 1. Лист Транзакции — одним вызовом
     new_rows = []
     for data in transactions:
         currency = data.get("currency", "RUB")
@@ -1071,8 +1072,9 @@ async def save_transactions_batch(transactions: list) -> int:
 
     if new_rows:
         ws_tx.append_rows(new_rows, value_input_option="USER_ENTERED")
-        logging.info(f"✅ Батч: {len(new_rows)} строк за 1 вызов")
+        logging.info(f"✅ Батч Транзакции: {len(new_rows)} строк за 1 вызов")
 
+    # 2. Сводные ячейки в месячных листах (суммируем по статьям)
     month_sums = defaultdict(float)
     for data in transactions:
         key = (
@@ -1082,23 +1084,33 @@ async def save_transactions_batch(transactions: list) -> int:
         )
         month_sums[key] += float(data.get("amount_rub", data.get("amount", 0)))
 
-    # Маппинг имени листа → дата для write_to_month_sheet
     MONTH_TO_DATE = {v: f"01.{k:02d}.{datetime.now().year}"
                      for k, v in MONTH_SHEETS.items()}
 
-    ws_cache = {}
     for (sheet_name, table_name, article), total_rub in month_sums.items():
         if not table_name or not article:
             continue
         try:
-            if sheet_name not in ws_cache:
-                ws_cache[sheet_name] = sh.worksheet(sheet_name)
             fake_date = MONTH_TO_DATE.get(sheet_name, datetime.now().strftime("%d.%m.%Y"))
             write_to_month_sheet(fake_date, article, total_rub, table_name)
         except gspread.exceptions.WorksheetNotFound:
             logging.warning(f"Лист {sheet_name} не найден")
         except Exception as e:
             logging.error(f"Ошибка {sheet_name}/{article}: {e}")
+
+    # 3. FIX: Детальные строки в месячные листы (Статья доходов / Статья расходов)
+    for data in transactions:
+        try:
+            write_transaction_row(
+                data.get("date", ""),
+                data.get("article", ""),
+                float(data.get("amount_rub", data.get("amount", 0))),
+                data.get("currency", "RUB"),
+                data.get("table_name", ""),
+                data.get("merchant", ""),
+            )
+        except Exception as e:
+            logging.error(f"Ошибка write_transaction_row: {e}")
 
     return len(new_rows)
 
@@ -1204,7 +1216,7 @@ def _enrich_transactions(transactions: list, article_results: list, existing: se
     for tx, (article, table_name) in zip(transactions, article_results):
         date_part  = str(tx.get("date", "")).split(",")[0].strip()
         amount_str = str(tx.get("amount", ""))
-        # Было: f"{date_part}|{amount_str}|{merchant_key}"
+        # FIX: проверка дубликатов по дата+сумма
         is_duplicate = f"{date_part}|{amount_str}" in existing
         currency     = tx.get("currency", "RUB")
         rate         = get_cbr_rate(currency)
@@ -1268,6 +1280,7 @@ async def pdf_action_handler(callback: types.CallbackQuery, state: FSMContext):
                     "rate":       tx.get("rate", 1.0),
                     "amount_rub": tx.get("amount_rub", tx.get("amount", 0)),
                     "tx_type":    tx.get("tx_type", "Расход"),
+                    "merchant":   tx.get("merchant", ""),
                 }
                 for tx in session["transactions"]
             ]
@@ -1467,9 +1480,6 @@ async def new_transaction(message: types.Message, state: FSMContext):
     await TransactionForm.tx_type.set()
     await message.answer("Тип операции:", reply_markup=tx_type_kb())
 
-# ============================================================
-# Тип операции
-# ============================================================
 @dp.message_handler(state=TransactionForm.tx_type)
 async def process_tx_type(message: types.Message, state: FSMContext):
     if message.text == "⏪ Назад":
@@ -1484,9 +1494,6 @@ async def process_tx_type(message: types.Message, state: FSMContext):
     await TransactionForm.table_choice.set()
     await message.answer("Выберите таблицу:", reply_markup=table_choice_kb(tx_type))
 
-# ============================================================
-# Выбор таблицы
-# ============================================================
 @dp.message_handler(state=TransactionForm.table_choice)
 async def process_table_choice(message: types.Message, state: FSMContext):
     data = await state.get_data()
@@ -1510,9 +1517,6 @@ async def process_table_choice(message: types.Message, state: FSMContext):
     await TransactionForm.article_choice.set()
     await message.answer(f"Выберите статью ({table_name}):", reply_markup=articles_kb(articles))
 
-# ============================================================
-# Выбор статьи
-# ============================================================
 @dp.message_handler(state=TransactionForm.article_choice)
 async def process_article_choice(message: types.Message, state: FSMContext):
     data       = await state.get_data()
@@ -1532,7 +1536,7 @@ async def process_article_choice(message: types.Message, state: FSMContext):
     if message.text not in valid:
         await message.answer("Выберите статью из списка:", reply_markup=articles_kb(valid))
         return
-    article    = message.text
+    article = message.text
     await state.update_data(article=article, table_name=table_name)
     if data.get("from_pdf"):
         user_id = message.from_user.id
@@ -1552,9 +1556,6 @@ async def process_article_choice(message: types.Message, state: FSMContext):
     await TransactionForm.amount.set()
     await message.answer("Введите сумму:", reply_markup=back_kb())
 
-# ============================================================
-# Сумма
-# ============================================================
 @dp.message_handler(state=TransactionForm.amount)
 async def process_amount(message: types.Message, state: FSMContext):
     data = await state.get_data()
@@ -1576,9 +1577,6 @@ async def process_amount(message: types.Message, state: FSMContext):
     await TransactionForm.currency.set()
     await message.answer("Выберите валюту:", reply_markup=currencies_kb())
 
-# ============================================================
-# Валюта
-# ============================================================
 @dp.message_handler(state=TransactionForm.currency)
 async def process_currency(message: types.Message, state: FSMContext):
     if message.text == "⏪ Назад":
@@ -1600,9 +1598,6 @@ async def process_currency(message: types.Message, state: FSMContext):
     kb.add("⏪ Назад")
     await message.answer("Введите дату и время или нажмите кнопку:", reply_markup=kb)
 
-# ============================================================
-# Дата
-# ============================================================
 @dp.message_handler(state=TransactionForm.date)
 async def process_date(message: types.Message, state: FSMContext):
     if message.text == "⏪ Назад":
@@ -1626,9 +1621,6 @@ async def process_date(message: types.Message, state: FSMContext):
     await TransactionForm.final_confirmation.set()
     await message.answer(build_preview(data), parse_mode="HTML", reply_markup=confirmation_kb())
 
-# ============================================================
-# Подтверждение
-# ============================================================
 @dp.message_handler(state=TransactionForm.final_confirmation)
 async def final_confirmation(message: types.Message, state: FSMContext):
     data = await state.get_data()
@@ -1822,10 +1814,10 @@ async def statistics(message: types.Message):
             return
         total = sum(table_totals.values())
         icons = {
-            "Поступления":     "📥",
-            "Движение активов":      "🏦",
-            "Крупные расходы": "💳",
-            "Расходы":         "🛒",
+            "Поступления":      "📥",
+            "Движение активов": "🏦",
+            "Крупные расходы":  "💳",
+            "Расходы":          "🛒",
         }
         text = f"📊 <b>Статистика за {current_month}:</b>\n"
         for tbl, amt in sorted(table_totals.items(), key=lambda x: x[1], reverse=True):
@@ -1859,7 +1851,7 @@ async def settings(message: types.Message):
         f"📥 Поступления      → col B / L\n"
         f"💳 Крупные расходы  → col O / Y\n"
         f"🛒 Расходы          → col AB / AL\n"
-        f"🏦 Движение активов       → col BB / BL",
+        f"🏦 Движение активов → col BB / BL",
         parse_mode="HTML", reply_markup=main_menu_kb()
     )
 
