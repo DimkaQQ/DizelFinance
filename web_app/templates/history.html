@@ -2,11 +2,9 @@
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>История — DizelTrade</title>
-
 <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet">
-
 <style>
 :root{
   --bg:#0c0c0c;
@@ -14,24 +12,32 @@
   --surface2:#1c1c1c;
   --border:#252525;
   --accent:#CCE01F;
+  --accent2:#c94f1e;
   --text:#e4e4e4;
   --muted:#606060;
+  --success:#3a9a5c;
+  --rad:2px;
 }
-
 *{box-sizing:border-box;margin:0;padding:0}
-
+html,body{height:100%}
 body{
   background:var(--bg);
   color:var(--text);
   font-family:'IBM Plex Sans',sans-serif;
+  display:flex;
+  flex-direction:column;
 }
 
+/* ===== HEADER ===== */
 header{
   background:var(--surface);
   border-bottom:2px solid var(--accent);
   padding:0 16px;
+  flex-shrink:0;
+  position:sticky;
+  top:0;
+  z-index:50;
 }
-
 .header-inner{
   max-width:720px;
   margin:0 auto;
@@ -40,166 +46,264 @@ header{
   align-items:center;
   height:50px;
 }
-
 .logo{
   font-family:'Oswald',sans-serif;
+  font-size:18px;
+  font-weight:700;
+  letter-spacing:.08em;
   color:var(--accent);
   text-transform:uppercase;
+  text-decoration:none;
 }
+.logo span{color:var(--muted);font-weight:400}
+.header-right{
+  font-family:'IBM Plex Mono',monospace;
+  font-size:11px;
+  color:var(--muted);
+  display:flex;
+  align-items:center;
+  gap:10px;
+}
+.back-link{
+  color:var(--muted);
+  text-decoration:none;
+  font-size:11px;
+  border:1px solid var(--border);
+  padding:4px 10px;
+  border-radius:var(--rad);
+  transition:all .15s;
+}
+.back-link:hover{color:var(--accent);border-color:var(--accent)}
 
+/* ===== PAGE ===== */
 .page{
+  flex:1;
   max-width:720px;
+  width:100%;
   margin:0 auto;
-  padding:24px 16px;
+  padding:24px 16px 60px;
+  overflow-y:auto;
 }
 
 h1{
   font-family:'Oswald',sans-serif;
   font-size:26px;
+  font-weight:600;
+  text-transform:uppercase;
+  letter-spacing:.04em;
   margin-bottom:20px;
+  line-height:1.2;
 }
 
+/* ===== ROW CARD ===== */
 .row{
   background:var(--surface);
   border:1px solid var(--border);
+  border-radius:var(--rad);
   padding:16px;
   margin-bottom:12px;
+  transition:border-color .15s;
 }
+.row:hover{border-color:var(--accent)}
 
+/* Meta line: date, time, user */
 .meta{
   font-family:'IBM Plex Mono',monospace;
-  font-size:11px;
+  font-size:10px;
   color:var(--muted);
-  margin-bottom:10px;
+  margin-bottom:12px;
+  display:flex;
+  flex-wrap:wrap;
+  gap:6px;
+  align-items:center;
+  letter-spacing:.03em;
 }
+.meta .badge{
+  background:var(--surface2);
+  padding:3px 8px;
+  border:1px solid var(--border);
+  border-radius:var(--rad);
+  white-space:nowrap;
+}
+.meta .badge.user{border-color:var(--accent);color:var(--accent)}
 
+/* Section title */
 .section{
   font-family:'Oswald',sans-serif;
-  font-size:18px;
+  font-size:16px;
+  font-weight:600;
   color:var(--accent);
-  margin-bottom:10px;
+  margin-bottom:14px;
+  text-transform:uppercase;
+  letter-spacing:.04em;
+  display:flex;
+  align-items:center;
+  gap:6px;
 }
 
-.block{
+/* Data grid */
+.data-grid{
+  display:grid;
+  grid-template-columns:1fr;
+  gap:8px;
+}
+@media(min-width:600px){
+  .data-grid{grid-template-columns:1fr 1fr}
+}
+
+.data-item{
+  display:flex;
+  justify-content:space-between;
+  align-items:flex-start;
+  padding:10px 12px;
   background:var(--surface2);
-  padding:10px;
-  margin-bottom:6px;
   border:1px solid var(--border);
-  font-size:14px;
+  border-radius:var(--rad);
+  font-size:13px;
+  transition:border-color .15s;
 }
+.data-item:hover{border-color:var(--accent)}
 
-.label{
+.data-key{
+  font-family:'IBM Plex Mono',monospace;
+  font-size:10px;
   color:var(--muted);
-  font-size:12px;
+  text-transform:uppercase;
+  letter-spacing:.08em;
+  margin-right:12px;
+  flex-shrink:0;
+  line-height:1.4;
 }
 
-.value{
-  margin-top:2px;
+.data-value{
+  font-weight:500;
+  text-align:right;
+  word-break:break-word;
+  line-height:1.4;
 }
+.data-value.number{
+  font-family:'IBM Plex Mono',monospace;
+  color:#a8d87a;
+}
+.data-value.string{color:var(--text)}
+.data-value.boolean{color:#7de2d1}
 
+/* Comment block */
 .comment{
-  margin-top:10px;
+  margin-top:14px;
+  padding-top:14px;
+  border-top:1px dashed var(--border);
   font-style:italic;
   color:#bcbcbc;
+  font-size:13px;
+  line-height:1.5;
 }
+.comment:before{content:'💬 ';margin-right:4px}
+
+/* Empty state */
+.empty{
+  color:var(--muted);
+  font-family:'IBM Plex Mono',monospace;
+  font-size:12px;
+  padding:40px 20px;
+  text-align:center;
+  background:var(--surface);
+  border:1px dashed var(--border);
+  border-radius:var(--rad);
+}
+
+/* Scrollbar for dark theme */
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:var(--muted)}
 </style>
 </head>
-
 <body>
 
+<!-- ===== HEADER ===== -->
 <header>
   <div class="header-inner">
-    <div class="logo">DizelTrade</div>
-    <a href="/menu">← меню</a>
+    <a href="/menu" class="logo">Dizel<span>Trade</span></a>
+    <div class="header-right">
+      <span>{{ username }}</span>
+      <a href="/menu" class="back-link">← меню</a>
+    </div>
   </div>
 </header>
 
+<!-- ===== PAGE CONTENT ===== -->
 <div class="page">
   <h1>История записей</h1>
 
+  {% if not rows %}
+    <div class="empty">
+      // записей пока нет<br>
+      <span style="color:var(--accent);margin-top:8px;display:inline-block">
+        Начните с добавления данных через меню
+      </span>
+    </div>
+  {% endif %}
+
   {% for row in rows %}
-    {% set data = row["Данные_JSON"] | tojson %}
-    {% set obj = row["Данные_JSON"] | safe %}
-
     {% set parsed = row["Данные_JSON"] | from_json if row["Данные_JSON"] else {} %}
-
+    
     <div class="row">
-
+      
+      <!-- Meta: date, time, user -->
       <div class="meta">
-        {{ row["Дата"] }} {{ row["Время"] }} — {{ row["Пользователь"] }}
+        <span class="badge">{{ row["Дата"] }}</span>
+        <span class="badge">{{ row["Время"] }}</span>
+        <span class="badge user">👤 {{ row["Пользователь"] }}</span>
       </div>
 
+      <!-- Section name with icon -->
       <div class="section">
         {% if row["Раздел"] == "auto" %}🚛 Автопарк
         {% elif row["Раздел"] == "hire" %}📦 Найм
         {% elif row["Раздел"] == "income" %}💰 Доход
         {% elif row["Раздел"] == "expenses" %}🧾 Расход
-        {% elif row["Раздел"] == "debt_payment" %}💸 Долг
-        {% else %}{{ row["Раздел"] }}
+        {% elif row["Раздел"] == "debt_payment" %}💸 Оплата долга
+        {% else %}📋 {{ row["Раздел"] }}
         {% endif %}
       </div>
 
-      {% set d = row["Данные_JSON"] | safe %}
-      {% set data = d | from_json %}
+      <!-- Dynamic data fields from JSON -->
+      <div class="data-grid">
+        {% for key, value in parsed.items() %}
+          {% if value is not none and value != '' %}
+            <div class="data-item">
+              <span class="data-key">{{ key }}</span>
+              <span class="data-value 
+                {% if value is number %}number
+                {% elif value is boolean %}boolean
+                {% else %}string{% endif %}">
+                {% if value is number %}
+                  {% if key in ['amount','revenue','client_sum','fuel_cost','carrier_cost','value'] %}
+                    {{ (value | float) | round(2) }} ₽
+                  {% elif key in ['volume'] %}
+                    {{ (value | float) | round(3) }} м³
+                  {% else %}
+                    {{ value | int if value | float == value | int else (value | float) | round(2) }}
+                  {% endif %}
+                {% elif value is boolean %}
+                  {{ '✓' if value else '—' }}
+                {% else %}
+                  {{ value }}
+                {% endif %}
+              </span>
+            </div>
+          {% endif %}
+        {% endfor %}
+      </div>
 
-      {% if data.machine %}
-        <div class="block">
-          <div class="label">Машина</div>
-          <div class="value">{{ data.machine }}</div>
-        </div>
-      {% endif %}
-
-      {% if data.field %}
-        <div class="block">
-          <div class="label">Тип</div>
-          <div class="value">{{ data.field }}</div>
-        </div>
-      {% endif %}
-
-      {% if data.value %}
-        <div class="block">
-          <div class="label">Значение</div>
-          <div class="value">{{ data.value }}</div>
-        </div>
-      {% endif %}
-
-      {% if data.revenue %}
-        <div class="block">
-          <div class="label">Выручка</div>
-          <div class="value">{{ data.revenue }} ₽</div>
-        </div>
-      {% endif %}
-
-      {% if data.client %}
-        <div class="block">
-          <div class="label">Клиент</div>
-          <div class="value">{{ data.client }}</div>
-        </div>
-      {% endif %}
-
-      {% if data.amount %}
-        <div class="block">
-          <div class="label">Сумма</div>
-          <div class="value">{{ data.amount }} ₽</div>
-        </div>
-      {% endif %}
-
-      {% if data.article %}
-        <div class="block">
-          <div class="label">Статья</div>
-          <div class="value">{{ data.article }}</div>
-        </div>
-      {% endif %}
-
-      {% if row["Комментарий"] %}
-        <div class="comment">
-          💬 {{ row["Комментарий"] }}
-        </div>
+      <!-- Comment if exists -->
+      {% if row["Комментарий"] and row["Комментарий"] != '' %}
+        <div class="comment">{{ row["Комментарий"] }}</div>
       {% endif %}
 
     </div>
   {% endfor %}
-
 </div>
 
 </body>

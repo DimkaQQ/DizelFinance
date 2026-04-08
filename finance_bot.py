@@ -826,8 +826,12 @@ def get_existing_transactions() -> set:
         records = ws.get_all_records()
         existing = set()
         for rec in records:
-            date   = str(rec.get("Дата", "")).split(",")[0].strip()
-            amount = str(rec.get("Сумма", "")).strip()
+            date = str(rec.get("Дата", "")).split(",")[0].strip()
+            # FIX: нормализуем сумму → "1850.0" и "1850" дадут одинаковый ключ
+            try:
+                amount = str(round(float(str(rec.get("Сумма", 0)).replace(",", ".")), 2))
+            except:
+                amount = str(rec.get("Сумма", "")).strip()
             existing.add(f"{date}|{amount}")
         return existing
     except Exception as e:
@@ -1038,22 +1042,83 @@ async def save_transaction_to_sheets(data: dict):
                           table_name, data.get("comment", ""))
 
 # ============================================================
-# FIX: Батчевая запись — все три места (Транзакции + сводные + детальные)
+# Батчевая запись детальных строк в месячные листы
 # ============================================================
-async def save_transactions_batch(transactions: list) -> int:
+def write_transaction_rows_batch(transactions: list):
+    """
+    Записывает детальные строки в месячные листы.
+    Трекает next_row локально чтобы не перезаписывать одну строку.
+    """
+    # Группируем транзакции по листу + типу (доход/расход)
+    # и трекаем позицию для каждого (sheet, date_col)
     from collections import defaultdict
-    if not transactions:
-        return 0
 
-    ws_tx = sh.worksheet("Транзакции")
+    # Сначала узнаем стартовые позиции для каждого листа
+    ws_cache   = {}
+    next_rows  = {}  # (sheet_name, date_col) → next_row
 
-    try:
-        headers = ws_tx.row_values(1)
-        if not headers or len(headers) < 7 or (len(headers) > 1 and headers[1] == "Категория"):
-            ws_tx.update("A1:H1", [["Дата", "Таблица", "Статья", "Сумма",
-                                     "Валюта", "Курс", "Сумма в Руб", "Тип"]])
-    except Exception as e:
-        logging.warning(f"Заголовки: {e}")
+    def get_ws(sheet_name):
+        if sheet_name not in ws_cache:
+            try:
+                ws_cache[sheet_name] = sh.worksheet(sheet_name)
+            except Exception:
+                ws_cache[sheet_name] = None
+        return ws_cache[sheet_name]
+
+    def get_next_row(sheet_name, date_col):
+        key = (sheet_name, date_col)
+        if key not in next_rows:
+            ws = get_ws(sheet_name)
+            if ws is None:
+                next_rows[key] = 46
+                return 46
+            try:
+                col_vals = ws.col_values(date_col)
+                nr = 46
+                for i, v in enumerate(col_vals[45:], start=46):
+                    if not str(v).strip():
+                        nr = i
+                        break
+                else:
+                    nr = max(46, len(col_vals) + 1)
+                next_rows[key] = nr
+            except Exception:
+                next_rows[key] = 46
+        return next_rows[key]
+
+    for data in transactions:
+        date_str   = data.get("date", "")
+        article    = data.get("article", "")
+        amount_rub = float(data.get("amount_rub", data.get("amount", 0)))
+        table_name = data.get("table_name", "")
+
+        sheet_name = get_month_sheet_name(date_str)
+        ws = get_ws(sheet_name)
+        if ws is None:
+            continue
+
+        is_income = table_name in ("Поступления", "Движение активов")
+        if is_income:
+            date_col   = TX_INCOME_DATE_COL
+            art_col    = TX_INCOME_ARTICLE_COL
+            amount_col = TX_INCOME_AMOUNT_COL
+        else:
+            date_col   = TX_EXPENSE_DATE_COL
+            art_col    = TX_EXPENSE_ARTICLE_COL
+            amount_col = TX_EXPENSE_AMOUNT_COL
+
+        next_row = get_next_row(sheet_name, date_col)
+
+        try:
+            date_short = date_str.split(",")[0].strip()
+            ws.update_cell(next_row, date_col,   date_short)
+            ws.update_cell(next_row, art_col,    article)
+            ws.update_cell(next_row, amount_col, round(amount_rub, 2))
+            logging.info(f"📝 {sheet_name} R{next_row} {article} {amount_rub}")
+            # Инкрементируем локально — не читаем из API снова
+            next_rows[(sheet_name, date_col)] = next_row + 1
+        except Exception as e:
+            logging.error(f"Ошибка write_transaction_rows_batch: {e}")
 
     # 1. Лист Транзакции — одним вызовом
     new_rows = []
@@ -1098,19 +1163,8 @@ async def save_transactions_batch(transactions: list) -> int:
         except Exception as e:
             logging.error(f"Ошибка {sheet_name}/{article}: {e}")
 
-    # 3. FIX: Детальные строки в месячные листы (Статья доходов / Статья расходов)
-    for data in transactions:
-        try:
-            write_transaction_row(
-                data.get("date", ""),
-                data.get("article", ""),
-                float(data.get("amount_rub", data.get("amount", 0))),
-                data.get("currency", "RUB"),
-                data.get("table_name", ""),
-                data.get("merchant", ""),
-            )
-        except Exception as e:
-            logging.error(f"Ошибка write_transaction_row: {e}")
+    # 3. FIX: Детальные строки — с локальным трекингом позиций
+    write_transaction_rows_batch(transactions)
 
     return len(new_rows)
 
@@ -1214,9 +1268,12 @@ async def handle_pdf(message: types.Message, state: FSMContext):
 def _enrich_transactions(transactions: list, article_results: list, existing: set) -> list:
     enriched = []
     for tx, (article, table_name) in zip(transactions, article_results):
-        date_part  = str(tx.get("date", "")).split(",")[0].strip()
-        amount_str = str(tx.get("amount", ""))
-        # FIX: проверка дубликатов по дата+сумма
+        date_part = str(tx.get("date", "")).split(",")[0].strip()
+        # FIX: нормализуем так же как в get_existing_transactions
+        try:
+            amount_str = str(round(float(str(tx.get("amount", 0))), 2))
+        except:
+            amount_str = str(tx.get("amount", ""))
         is_duplicate = f"{date_part}|{amount_str}" in existing
         currency     = tx.get("currency", "RUB")
         rate         = get_cbr_rate(currency)
