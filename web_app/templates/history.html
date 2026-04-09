@@ -1,310 +1,516 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>История — DizelTrade</title>
-<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet">
-<style>
-:root{
-  --bg:#0c0c0c;
-  --surface:#151515;
-  --surface2:#1c1c1c;
-  --border:#252525;
-  --accent:#CCE01F;
-  --accent2:#c94f1e;
-  --text:#e4e4e4;
-  --muted:#606060;
-  --success:#3a9a5c;
-  --rad:2px;
-}
-*{box-sizing:border-box;margin:0;padding:0}
-html,body{height:100%}
-body{
-  background:var(--bg);
-  color:var(--text);
-  font-family:'IBM Plex Sans',sans-serif;
-  display:flex;
-  flex-direction:column;
-}
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>История — DizelTrade</title>
+  <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    /* ============================================
+       CSS ПЕРЕМЕННЫЕ (тема)
+       ============================================ */
+    :root {
+      --bg: #0c0c0c;
+      --surface: #151515;
+      --surface2: #1c1c1c;
+      --border: #252525;
+      --accent: #CCE01F;
+      --accent2: #c94f1e;
+      --text: #e4e4e4;
+      --muted: #606060;
+      --success: #3a9a5c;
+      --rad: 2px;
+      --shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+    }
 
-/* ===== HEADER ===== */
-header{
-  background:var(--surface);
-  border-bottom:2px solid var(--accent);
-  padding:0 16px;
-  flex-shrink:0;
-  position:sticky;
-  top:0;
-  z-index:50;
-}
-.header-inner{
-  max-width:720px;
-  margin:0 auto;
-  display:flex;
-  justify-content:space-between;
-  align-items:center;
-  height:50px;
-}
-.logo{
-  font-family:'Oswald',sans-serif;
-  font-size:18px;
-  font-weight:700;
-  letter-spacing:.08em;
-  color:var(--accent);
-  text-transform:uppercase;
-  text-decoration:none;
-}
-.logo span{color:var(--muted);font-weight:400}
-.header-right{
-  font-family:'IBM Plex Mono',monospace;
-  font-size:11px;
-  color:var(--muted);
-  display:flex;
-  align-items:center;
-  gap:10px;
-}
-.back-link{
-  color:var(--muted);
-  text-decoration:none;
-  font-size:11px;
-  border:1px solid var(--border);
-  padding:4px 10px;
-  border-radius:var(--rad);
-  transition:all .15s;
-}
-.back-link:hover{color:var(--accent);border-color:var(--accent)}
+    /* ============================================
+       СБРОС И БАЗОВЫЕ СТИЛИ
+       ============================================ */
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
 
-/* ===== PAGE ===== */
-.page{
-  flex:1;
-  max-width:720px;
-  width:100%;
-  margin:0 auto;
-  padding:24px 16px 60px;
-  overflow-y:auto;
-}
+    html, body {
+      height: 100%;
+      scroll-behavior: smooth;
+    }
 
-h1{
-  font-family:'Oswald',sans-serif;
-  font-size:26px;
-  font-weight:600;
-  text-transform:uppercase;
-  letter-spacing:.04em;
-  margin-bottom:20px;
-  line-height:1.2;
-}
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'IBM Plex Sans', sans-serif;
+      display: flex;
+      flex-direction: column;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
 
-/* ===== ROW CARD ===== */
-.row{
-  background:var(--surface);
-  border:1px solid var(--border);
-  border-radius:var(--rad);
-  padding:16px;
-  margin-bottom:12px;
-  transition:border-color .15s;
-}
-.row:hover{border-color:var(--accent)}
+    /* ============================================
+       ШАПКА (HEADER)
+       ============================================ */
+    header {
+      background: var(--surface);
+      border-bottom: 2px solid var(--accent);
+      padding: 0 16px;
+      flex-shrink: 0;
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      box-shadow: var(--shadow);
+    }
 
-/* Meta line: date, time, user */
-.meta{
-  font-family:'IBM Plex Mono',monospace;
-  font-size:10px;
-  color:var(--muted);
-  margin-bottom:12px;
-  display:flex;
-  flex-wrap:wrap;
-  gap:6px;
-  align-items:center;
-  letter-spacing:.03em;
-}
-.meta .badge{
-  background:var(--surface2);
-  padding:3px 8px;
-  border:1px solid var(--border);
-  border-radius:var(--rad);
-  white-space:nowrap;
-}
-.meta .badge.user{border-color:var(--accent);color:var(--accent)}
+    .header-inner {
+      max-width: 720px;
+      margin: 0 auto;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      height: 50px;
+    }
 
-/* Section title */
-.section{
-  font-family:'Oswald',sans-serif;
-  font-size:16px;
-  font-weight:600;
-  color:var(--accent);
-  margin-bottom:14px;
-  text-transform:uppercase;
-  letter-spacing:.04em;
-  display:flex;
-  align-items:center;
-  gap:6px;
-}
+    .logo {
+      font-family: 'Oswald', sans-serif;
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      color: var(--accent);
+      text-transform: uppercase;
+      text-decoration: none;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
 
-/* Data grid */
-.data-grid{
-  display:grid;
-  grid-template-columns:1fr;
-  gap:8px;
-}
-@media(min-width:600px){
-  .data-grid{grid-template-columns:1fr 1fr}
-}
+    .logo span {
+      color: var(--muted);
+      font-weight: 400;
+    }
 
-.data-item{
-  display:flex;
-  justify-content:space-between;
-  align-items:flex-start;
-  padding:10px 12px;
-  background:var(--surface2);
-  border:1px solid var(--border);
-  border-radius:var(--rad);
-  font-size:13px;
-  transition:border-color .15s;
-}
-.data-item:hover{border-color:var(--accent)}
+    .header-right {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 11px;
+      color: var(--muted);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
 
-.data-key{
-  font-family:'IBM Plex Mono',monospace;
-  font-size:10px;
-  color:var(--muted);
-  text-transform:uppercase;
-  letter-spacing:.08em;
-  margin-right:12px;
-  flex-shrink:0;
-  line-height:1.4;
-}
+    .back-link {
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 11px;
+      border: 1px solid var(--border);
+      padding: 4px 10px;
+      border-radius: var(--rad);
+      transition: all 0.15s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
 
-.data-value{
-  font-weight:500;
-  text-align:right;
-  word-break:break-word;
-  line-height:1.4;
-}
-.data-value.number{
-  font-family:'IBM Plex Mono',monospace;
-  color:#a8d87a;
-}
-.data-value.string{color:var(--text)}
-.data-value.boolean{color:#7de2d1}
+    .back-link:hover {
+      color: var(--accent);
+      border-color: var(--accent);
+      background: rgba(204, 224, 31, 0.08);
+    }
 
-/* Comment block */
-.comment{
-  margin-top:14px;
-  padding-top:14px;
-  border-top:1px dashed var(--border);
-  font-style:italic;
-  color:#bcbcbc;
-  font-size:13px;
-  line-height:1.5;
-}
-.comment:before{content:'💬 ';margin-right:4px}
+    /* ============================================
+       ОСНОВНОЙ КОНТЕНТ (PAGE)
+       ============================================ */
+    .page {
+      flex: 1;
+      max-width: 720px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 24px 16px 60px;
+      overflow-y: auto;
+    }
 
-/* Empty state */
-.empty{
-  color:var(--muted);
-  font-family:'IBM Plex Mono',monospace;
-  font-size:12px;
-  padding:40px 20px;
-  text-align:center;
-  background:var(--surface);
-  border:1px dashed var(--border);
-  border-radius:var(--rad);
-}
+    h1 {
+      font-family: 'Oswald', sans-serif;
+      font-size: 26px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-bottom: 20px;
+      line-height: 1.2;
+      color: var(--text);
+    }
 
-/* Scrollbar for dark theme */
-::-webkit-scrollbar{width:6px;height:6px}
-::-webkit-scrollbar-track{background:var(--bg)}
-::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
-::-webkit-scrollbar-thumb:hover{background:var(--muted)}
-</style>
+    /* ============================================
+       КАРТОЧКА ЗАПИСИ (ROW)
+       ============================================ */
+    .row {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--rad);
+      padding: 16px;
+      margin-bottom: 12px;
+      transition: border-color 0.15s ease, transform 0.1s ease;
+    }
+
+    .row:hover {
+      border-color: var(--accent);
+      transform: translateY(-1px);
+    }
+
+    /* Мета-информация: дата, время, пользователь */
+    .meta {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 10px;
+      color: var(--muted);
+      margin-bottom: 12px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+      letter-spacing: 0.03em;
+    }
+
+    .meta .badge {
+      background: var(--surface2);
+      padding: 3px 8px;
+      border: 1px solid var(--border);
+      border-radius: var(--rad);
+      white-space: nowrap;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .meta .badge.user {
+      border-color: var(--accent);
+      color: var(--accent);
+      font-weight: 500;
+    }
+
+    /* Заголовок раздела с иконкой */
+    .section {
+      font-family: 'Oswald', sans-serif;
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--accent);
+      margin-bottom: 14px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    /* ============================================
+       СЕТКА ДАННЫХ (DATA GRID)
+       ============================================ */
+    .data-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 8px;
+    }
+
+    @media (min-width: 600px) {
+      .data-grid {
+        grid-template-columns: 1fr 1fr;
+      }
+    }
+
+    .data-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      padding: 10px 12px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--rad);
+      font-size: 13px;
+      transition: border-color 0.15s ease;
+    }
+
+    .data-item:hover {
+      border-color: var(--accent);
+    }
+
+    .data-key {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 10px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-right: 12px;
+      flex-shrink: 0;
+      line-height: 1.4;
+    }
+
+    .data-value {
+      font-weight: 500;
+      text-align: right;
+      word-break: break-word;
+      line-height: 1.4;
+      max-width: 60%;
+    }
+
+    .data-value.number {
+      font-family: 'IBM Plex Mono', monospace;
+      color: #a8d87a;
+    }
+
+    .data-value.string {
+      color: var(--text);
+    }
+
+    .data-value.boolean {
+      color: #7de2d1;
+    }
+
+    /* ============================================
+       БЛОК КОММЕНТАРИЯ
+       ============================================ */
+    .comment {
+      margin-top: 14px;
+      padding-top: 14px;
+      border-top: 1px dashed var(--border);
+      font-style: italic;
+      color: #bcbcbc;
+      font-size: 13px;
+      line-height: 1.5;
+      word-break: break-word;
+    }
+
+    .comment:before {
+      content: '💬 ';
+      margin-right: 4px;
+    }
+
+    /* ============================================
+       ПУСТОЕ СОСТОЯНИЕ
+       ============================================ */
+    .empty {
+      color: var(--muted);
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 12px;
+      padding: 40px 20px;
+      text-align: center;
+      background: var(--surface);
+      border: 1px dashed var(--border);
+      border-radius: var(--rad);
+      margin-top: 20px;
+    }
+
+    .empty span {
+      color: var(--accent);
+      margin-top: 8px;
+      display: inline-block;
+    }
+
+    /* ============================================
+       СКРОЛЛБАР (тёмная тема)
+       ============================================ */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: var(--bg);
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 3px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: var(--muted);
+    }
+
+    /* ============================================
+       АНИМАЦИИ И ЭФФЕКТЫ
+       ============================================ */
+    @media (prefers-reduced-motion: no-preference) {
+      .row {
+        animation: fadeIn 0.2s ease-out;
+      }
+
+      @keyframes fadeIn {
+        from {
+          opacity: 0;
+          transform: translateY(8px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+    }
+
+    /* ============================================
+       АДАПТИВНОСТЬ
+       ============================================ */
+    @media (max-width: 480px) {
+      h1 {
+        font-size: 22px;
+      }
+
+      .data-value {
+        max-width: 55%;
+        font-size: 12px;
+      }
+
+      .data-key {
+        font-size: 9px;
+      }
+
+      .meta .badge {
+        padding: 2px 6px;
+        font-size: 9px;
+      }
+    }
+  </style>
 </head>
 <body>
 
-<!-- ===== HEADER ===== -->
-<header>
-  <div class="header-inner">
-    <a href="/menu" class="logo">Dizel<span>Trade</span></a>
-    <div class="header-right">
-      <span>{{ username }}</span>
-      <a href="/menu" class="back-link">← меню</a>
+  <!-- ===== ШАПКА САЙТА ===== -->
+  <header>
+    <div class="header-inner">
+      <a href="/menu" class="logo">Dizel<span>Trade</span></a>
+      <div class="header-right">
+        <span>{{ username }}</span>
+        <a href="/menu" class="back-link">← меню</a>
+      </div>
     </div>
-  </div>
-</header>
+  </header>
 
-<!-- ===== PAGE CONTENT ===== -->
-<div class="page">
-  <h1>История записей</h1>
+  <!-- ===== ОСНОВНОЙ КОНТЕНТ ===== -->
+  <div class="page">
+    <h1>История записей</h1>
 
-  {% if not rows %}
-    <div class="empty">
-      // записей пока нет<br>
-      <span style="color:var(--accent);margin-top:8px;display:inline-block">
-        Начните с добавления данных через меню
-      </span>
-    </div>
-  {% endif %}
+    <!-- Сообщение, если записей нет -->
+    {% if not rows %}
+      <div class="empty">
+        // записей пока нет<br>
+        <span style="color:var(--accent);margin-top:8px;display:inline-block">
+          Начните с добавления данных через меню
+        </span>
+      </div>
+    {% endif %}
 
-  {% for row in rows %}
-    {% set parsed = row["Данные_JSON"] | from_json if row["Данные_JSON"] else {} %}
-    
-    <div class="row">
+    <!-- Цикл по всем записям -->
+    {% for row in rows %}
+      {# Парсим JSON из строки в объект #}
+      {% set parsed = row["Данные_JSON"] | from_json if row["Данные_JSON"] else {} %}
       
-      <!-- Meta: date, time, user -->
-      <div class="meta">
-        <span class="badge">{{ row["Дата"] }}</span>
-        <span class="badge">{{ row["Время"] }}</span>
-        <span class="badge user">👤 {{ row["Пользователь"] }}</span>
-      </div>
+      {# =====================================================
+         СЛОВАРЬ: технические ключи → русские названия полей
+         Добавляйте сюда новые пары при необходимости
+         ===================================================== #}
+      {% set labels = {
+        'machine': 'Машина',
+        'field': 'Тип записи',
+        'value': 'Значение',
+        'revenue': 'Выручка',
+        'client': 'Заказчик',
+        'supplier': 'Поставщик',
+        'carrier': 'Перевозчик',
+        'volume': 'Объём',
+        'client_sum': 'Цена клиенту',
+        'fuel_cost': 'Цена поставщику',
+        'carrier_cost': 'Цена перевозчику',
+        'amount': 'Сумма',
+        'article': 'Статья расхода',
+        'debtor': 'Должник',
+        'comment': 'Комментарий'
+      } %}
 
-      <!-- Section name with icon -->
-      <div class="section">
-        {% if row["Раздел"] == "auto" %}🚛 Автопарк
-        {% elif row["Раздел"] == "hire" %}📦 Найм
-        {% elif row["Раздел"] == "income" %}💰 Доход
-        {% elif row["Раздел"] == "expenses" %}🧾 Расход
-        {% elif row["Раздел"] == "debt_payment" %}💸 Оплата долга
-        {% else %}📋 {{ row["Раздел"] }}
-        {% endif %}
-      </div>
+      <!-- Карточка одной записи -->
+      <div class="row">
+        
+        <!-- Мета-строка: дата, время, пользователь -->
+        <div class="meta">
+          <span class="badge">📅 {{ row["Дата"] }}</span>
+          <span class="badge">🕐 {{ row["Время"] }}</span>
+          <span class="badge user">👤 {{ row["Пользователь"] }}</span>
+        </div>
 
-      <!-- Dynamic data fields from JSON -->
-      <div class="data-grid">
-        {% for key, value in parsed.items() %}
-          {% if value is not none and value != '' %}
-            <div class="data-item">
-              <span class="data-key">{{ key }}</span>
-              <span class="data-value 
-                {% if value is number %}number
-                {% elif value is boolean %}boolean
-                {% else %}string{% endif %}">
-                {% if value is number %}
-                  {% if key in ['amount','revenue','client_sum','fuel_cost','carrier_cost','value'] %}
-                    {{ (value | float) | round(2) }} ₽
-                  {% elif key in ['volume'] %}
-                    {{ (value | float) | round(3) }} м³
-                  {% else %}
-                    {{ value | int if value | float == value | int else (value | float) | round(2) }}
-                  {% endif %}
-                {% elif value is boolean %}
-                  {{ '✓' if value else '—' }}
-                {% else %}
-                  {{ value }}
-                {% endif %}
-              </span>
-            </div>
+        <!-- Заголовок раздела с иконкой -->
+        <div class="section">
+          {% if row["Раздел"] == "auto" %}
+            🚛 Автопарк
+          {% elif row["Раздел"] == "hire" %}
+            📦 Найм
+          {% elif row["Раздел"] == "income" %}
+            💰 Доход
+          {% elif row["Раздел"] == "expenses" %}
+            🧾 Расход
+          {% elif row["Раздел"] == "debt_payment" %}
+            💸 Оплата долга
+          {% else %}
+            📋 {{ row["Раздел"] }}
           {% endif %}
-        {% endfor %}
+        </div>
+
+        <!-- Сетка с данными из JSON (динамический вывод) -->
+        <div class="data-grid">
+          {% for key, value in parsed.items() %}
+            {# Пропускаем пустые значения и комментарий (он выводится отдельно) #}
+            {% if value is not none and value != '' and key != 'comment' %}
+              {# Получаем русское название или оставляем ключ как есть #}
+              {% set label = labels[key] if key in labels else key %}
+              
+              <div class="data-item">
+                <span class="data-key">{{ label }}</span>
+                <span class="data-value 
+                  {% if value is number %}number
+                  {% elif value is boolean %}boolean
+                  {% else %}string{% endif %}">
+                  
+                  {# Форматирование значений в зависимости от типа #}
+                  {% if value is number %}
+                    {# Денежные поля с ₽ #}
+                    {% if key in ['amount','revenue','client_sum','fuel_cost','carrier_cost'] %}
+                      {{ (value | float) | round(2) }} ₽
+                    
+                    {# Объём с м³ #}
+                    {% elif key == 'volume' %}
+                      {{ (value | float) | round(3) }} м³
+                    
+                    {# Кол-во рейсов и другие целые числа #}
+                    {% elif key == 'value' and parsed.get('field') == 'Кол-во рейсов' %}
+                      {{ value | int }}
+                    
+                    {# Остальные числа #}
+                    {% else %}
+                      {{ value | int if value | float == value | int else (value | float) | round(2) }}
+                    {% endif %}
+                  
+                  {# Булевы значения #}
+                  {% elif value is boolean %}
+                    {{ '✓ Да' if value else '— Нет' }}
+                  
+                  {# Текст и строки #}
+                  {% else %}
+                    {{ value }}
+                  {% endif %}
+                </span>
+              </div>
+            {% endif %}
+          {% endfor %}
+        </div>
+
+        <!-- Отдельный блок для комментария (если есть) -->
+        {% if row["Комментарий"] and row["Комментарий"] != '' %}
+          <div class="comment">{{ row["Комментарий"] }}</div>
+        {% endif %}
+
       </div>
-
-      <!-- Comment if exists -->
-      {% if row["Комментарий"] and row["Комментарий"] != '' %}
-        <div class="comment">{{ row["Комментарий"] }}</div>
-      {% endif %}
-
-    </div>
-  {% endfor %}
-</div>
+      <!-- /Карточка записи -->
+      
+    {% endfor %}
+    <!-- /Цикл записей -->
+    
+  </div>
+  <!-- /page -->
 
 </body>
 </html>
